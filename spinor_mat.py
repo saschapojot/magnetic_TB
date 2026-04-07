@@ -7,7 +7,7 @@ sigma_z = np.array([[1, 0], [0, -1]], dtype=complex)
 I_2x2 = np.eye(2, dtype=complex)
 
 
-def O3_to_spinor(A, delta=1, tol=1e-7):
+def O3_to_spinor(A, tol=1e-7):
     """
     Computes the spinor transformation matrix for a given O(3) matrix A.
 
@@ -17,9 +17,7 @@ def O3_to_spinor(A, delta=1, tol=1e-7):
         tol (float): Tolerance for floating point comparisons.
 
     Returns:
-        (numpy.ndarray): The 2x2 complex matrix acting on the spinor.
-                         If delta == -1, this matrix should be multiplied
-                         by the complex conjugate of the spinor.
+        (numpy.ndarray): U
     """
     A = np.array(A, dtype=float)
 
@@ -71,13 +69,14 @@ def O3_to_spinor(A, delta=1, tol=1e-7):
     # Step 4: Construct the SU(2) matrix U using global Pauli matrices
     n_dot_sigma = n0 * sigma_x + n1 * sigma_y + n2 * sigma_z
     U = np.cos(theta / 2) * I_2x2 - 1j * np.sin(theta / 2) * n_dot_sigma
+    return U
 
-    # Step 5: Apply time reversal if delta == -1
-    if delta == 1:
-        return U
-    elif delta == -1:
-        U_conj = np.conj(U)
-        T_mat = -1j * sigma_y @ U_conj
-        return T_mat
-    else:
-        raise ValueError("delta must be 1 or -1")
+R=np.array([
+    [1,0,0],
+    [0,-1,0],
+    [0,0,1]
+])
+
+U=O3_to_spinor(R)
+
+print(U)
