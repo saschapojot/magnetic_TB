@@ -72,9 +72,9 @@ def O3_to_spinor(A, tol=1e-7):
     return U
 
 R=np.array([
+    [0,1,0],
     [1,0,0],
-    [0,-1,0],
-    [0,0,1]
+    [0,0,-1]
 ])
 
 U=O3_to_spinor(R)

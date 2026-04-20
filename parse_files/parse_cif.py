@@ -560,24 +560,24 @@ def subroutine_generate_all_symmetry_transformation_matrices(cif_file_path):
     This function writes the symmetry transformation matrices and delta to a pkl file.
     """
     symmetry_operations = parse_cif_contents_xyz_transformations(cif_file_path)
-    out_dict = {}
+    out_list = []
 
     for counter, op_dict in enumerate(symmetry_operations):
         # Now we get both the 3x4 matrix and the delta value directly from the parser
         mat, delta = parse_transformation_one_row_to_matrix(op_dict)
 
-        # Save both to the dictionary
-        key_mat = f"mat{counter}"
-        key_delta = f"delta{counter}"
-        out_dict[key_mat] = mat
-        out_dict[key_delta] = delta
+        # Append as a dictionary to the list
+        out_list.append({
+            "mat": mat,
+            "delta": delta
+        })
 
     cif_dir = Path(cif_file_path).resolve().parent
     out_pickle_file_name = str(cif_dir / symmetry_matrices_file_name)
 
     # --- SAVE TO PICKLE ---
     with open(out_pickle_file_name, 'wb') as f:
-        pickle.dump(out_dict, f)
+        pickle.dump(out_list, f)
 
     return out_pickle_file_name
 
