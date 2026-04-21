@@ -62,6 +62,9 @@ full_orbitals = [
     'fz3', 'fxz3', 'fyz3', 'fxyz', 'fz(x2-y2)', 'fx(x2-3y2)', 'fy(3x2-y2)'
 ]
 
+#file containing representations
+representations_all_file_name="representations_all.pkl"
+
 type_linear="linear"
 type_hermitian="hermitian"
 
@@ -77,3 +80,4 @@ BZ_path_file_name="BZ_path.conf"
 
 
 plotting_band_data_pkl_file_name="plotting_band_data.pkl"
+

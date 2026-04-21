@@ -388,3 +388,4 @@ parsed_config = subroutine_parseConfContents(conf_file)
 # Output the parsed configuration as JSON to stdout
 # This allows the data to be piped to other scripts
 print(json.dumps(parsed_config, indent=2), file=sys.stdout)
+
