@@ -13,6 +13,8 @@ from name_conventions import orbital_map, processed_input_pkl_file_name, type_li
     H_html_file_name, H_pkl_file_name, hopping_parameters_template_file_name,representations_all_file_name
 
 sp.init_printing(use_unicode=False, wrap_line=False)
+
+from classes.class_defs import frac_to_cartesian, atomIndex
 # this script computes for magnetic space group system
 
 # ==============================================================================
@@ -348,13 +350,18 @@ repr_p_np = np.array(repr_p)
 repr_d_np = np.array(repr_d)
 repr_f_np = np.array(repr_f)
 
-magnetic_space_group_matrices_cartesian= np.array(magnetic_space_group_representations["magnetic_space_group_matrices_spatial_cartesian"])
-magnetic_space_group_cart =[np.array(item) for item in magnetic_space_group_matrices_cartesian]
+magnetic_space_group_matrices_spatial_cartesian= np.array(magnetic_space_group_representations["magnetic_space_group_matrices_spatial_cartesian"])
+#magnetic space group are represented in 3 parts, magnetic_space_group_cart_spatial is the spatial part
+#spinor_mat_representation is the spinor part,
+#delta_vec indicates time reversal
+#spatial part
+magnetic_space_group_cart_spatial =[np.array(item) for item in magnetic_space_group_matrices_spatial_cartesian]
 print(f"directions_to_study={directions_to_study}")
 search_dim = parsed_config['dim']  # =len(directions_to_study)
 # print(f"search_dim={search_dim}")
+#spinor part
 spinor_mat_representation=np.array(magnetic_space_group_representations["spinor_mat_representation"])
-
+#indicating time reversal
 delta_vec=np.array(magnetic_space_group_representations["delta_vec"])
 
 preprocessing_data = {
@@ -366,7 +373,7 @@ preprocessing_data = {
     'directions_to_study':directions_to_study,
     "dim":search_dim,
     # NumPy arrays for efficient computation
-    'magnetic_space_group_cart': magnetic_space_group_cart,  # List of np.ndarray
+    'magnetic_space_group_cart_spatial': magnetic_space_group_cart_spatial,  # List of np.ndarray
     "spinor_mat_representation":spinor_mat_representation,
     "delta_vec":delta_vec,
     'origin_cart': origin_cart,  # np.ndarray (3,)
@@ -406,7 +413,7 @@ try:
     print(f"\nSaved data includes:")
     print(f"  - parsed_config: Configuration dictionary")
     print(f"  - magnetic_space_group_representations: Full representation data")
-    print(f"  - magnetic_space_group_cart: {len(magnetic_space_group_cart)} operations")
+    print(f"  - magnetic_space_group_cart_spatial: {len(magnetic_space_group_cart_spatial)} operations")
     print(f"  - origin_cart: magnetic Space group origin")
     print(f"  - repr_s/p/d/f_np: Orbital representation matrices")
     print(f"  - orbital_completion_results: Symmetry-completed orbitals")
@@ -418,3 +425,168 @@ except Exception as e:
     exit(save_err_code)
 
 print("=" * 80)
+
+def get_rotation_translation(magnetic_space_group_cart_spatial, operation_idx):
+    """
+    Extract rotation/reflection matrix R and translation vector t from a space group operation.
+
+    The magnetic space group operation is in the form [R|t], represented as a 3×4 matrix:
+        [R | t] = [R00 R01 R02 | t0]
+                  [R10 R11 R12 | t1]
+                  [R20 R21 R22 | t2]
+
+    The operation transforms a position vector r as: r' = R @ r + t
+
+    Args:
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+                                 using cif origin (shape: num_ops × 3 × 4)
+        operation_idx: Index of the magnetic space group operation
+
+    Returns:
+        tuple: (R, t)
+            - R (ndarray): 3×3 rotation/reflection matrix
+            - t (ndarray): 3D translation vector
+    """
+    operation = magnetic_space_group_cart_spatial[operation_idx]
+    R = operation[:3, :3]  # Rotation/reflection part
+    t = operation[:3, 3]  # Translation part
+
+    return R, t
+
+def generate_wyckoff_orbit(wyckoff_position, magnetic_space_group_cart_spatial, lattice_basis,
+                           tolerance=1e-3):
+    """
+    Generate all symmetry-equivalent positions (orbit) from a single Wyckoff position.
+    Applies all magnetic space group operations' spatial parts to a Wyckoff position and collects unique
+    atomic positions within the unit cell. This generates the complete orbit of
+    the Wyckoff position under the magnetic space group.
+    For each spatial operation [R|t], the transformation is:
+        r' = R @ r + t
+    where r is in fractional coordinates of the primitive cell.
+    Positions that differ by a lattice vector are considered equivalent,
+    so we reduce all positions to the range [0, 1) in fractional coordinates.
+    Args:
+        wyckoff_position: dict from parsed_config['Wyckoff_positions']
+                         Must contain 'fractional_coordinates' key
+                         Example: {'position_name': 'V0',
+                                    'orbitals': ['3dxy', '3dyz', '3dxz']
+                                  'fractional_coordinates':  [0.0, 0.5, 0.0]}
+        magnetic_space_group_cart_spatial: List of spatial parts of magnetic space group matrices in Cartesian coordinates
+                                using cif origin [0,0,0] (shape: num_ops × 3 × 4)
+        lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+                        expressed in Cartesian coordinates using cif origin
+        tolerance: Numerical tolerance for identifying duplicate positions (default: 1e-3)
+
+    Returns: list of dicts: Each dict contains:
+            - 'fractional_coordinates': [f0, f1, f2] in range [0, 1)
+            - 'cartesian_coordinates': [x, y, z] in Cartesian coords (cif origin)
+            - 'operation_idx': which space group operation generated this position
+            - 'position_name': inherited from input Wyckoff position
+
+    """
+    # Extract input position in fractional coordinates
+    r_frac_input = np.array(wyckoff_position['fractional_coordinates'])
+    position_name = wyckoff_position['position_name']
+    # Convert lattice basis to proper array and get transformation matrices
+    lattice_basis = np.array(lattice_basis)  # rows are basis vectors
+    lattice_matrix = np.column_stack(lattice_basis)  # Columns are basis vectors
+    lattice_matrix_inv = np.linalg.inv(lattice_matrix)
+    # Convert input fractional coordinates to Cartesian using cif origin
+    r_cart_input = frac_to_cartesian([0, 0, 0], r_frac_input, lattice_basis, origin_cart)
+    # Store unique positions
+    unique_positions = []
+    unique_frac_coords = []  # For deduplication
+    # Apply each space group operation
+    for op_idx, operation in enumerate(magnetic_space_group_cart_spatial):
+        # Extract rotation and translation
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+
+        # Apply symmetry operation in Cartesian coordinates
+        # r_cart' = R @ r_cart + t
+        r_cart_transformed = R @ r_cart_input + t
+        # Convert back to fractional coordinates
+        r_frac_transformed = lattice_matrix_inv @ r_cart_transformed
+        # Wrap to [0, 1) to stay within unit cell
+        r_frac_wrapped = r_frac_transformed % 1.0
+        # Check if this position is already in our list (within tolerance)
+        is_duplicate = False
+        for existing_frac in unique_frac_coords:
+            # Check if positions are equivalent (accounting for periodic boundary conditions)
+            diff = r_frac_wrapped - existing_frac
+            if np.linalg.norm(diff) < tolerance:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            # Add to unique positions
+            unique_frac_coords.append(r_frac_wrapped)
+
+            # Convert wrapped fractional back to Cartesian for output
+            r_cart_final = frac_to_cartesian([0, 0, 0], r_frac_wrapped, lattice_basis, origin_cart)
+
+            # Create position dictionary
+            position_dict = {
+                'fractional_coordinates': r_frac_wrapped.tolist(),
+                'cartesian_coordinates': r_cart_final.tolist(),
+                'operation_idx': op_idx,
+                'position_name': position_name,
+            }
+            unique_positions.append(position_dict)
+
+    return unique_positions
+
+def generate_atoms_in_unit_cell(parsed_config,magnetic_space_group_cart_spatial, lattice_basis,origin_cart,
+                                repr_s, repr_p, repr_d, repr_f,
+                                spinor_mat_representation,delta_vec,
+                                tolerance=1e-3):
+    """
+    Generates all atoms in the unit cell by expanding the Wyckoff positions defined
+    in the configuration using the provided magnetic space group operations.
+    Args:
+        parsed_config: Dictionary containing configuration (Wyckoff positions, origin, etc.)
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+        lattice_basis: 3x3 array of lattice basis vectors (each row is a basis vector)
+        origin_cart: [0,0,0]
+        repr_s, repr_p, repr_d, repr_f: Orbital representation matrices (numpy arrays)
+        spinor_mat_representation: representation on spinors, time reversal considered
+        delta_vec: delta values indicating whether a magnetic space group operation has time reversal,
+                    1 means no time reversal, -1 means time reversal
+        tolerance: Numerical tolerance for coordinate comparisons
+
+    Returns: A list of atomIndex objects representing all atoms in the unit cell [0,0,0]
+
+    """
+    unit_cell_atoms = []
+    # Iterate over all Wyckoff positions defined in the configuration
+    for wyckoff_pos in parsed_config['Wyckoff_positions']:
+        # Generate the full orbit (all equivalent atoms in unit cell)
+        # This function applies magnetic space group spatial part operations to the Wyckoff generator
+        orbit = generate_wyckoff_orbit(
+            wyckoff_pos,
+            magnetic_space_group_cart_spatial,
+            lattice_basis,
+            tolerance
+        )
+        # Create atomIndex objects for each position in the orbit
+        for index, pos_data in enumerate(orbit):
+            atom = atomIndex(
+                cell=[0, 0, 0],  # Always the home unit cell
+                frac_coord=pos_data['fractional_coordinates'],
+                position_name=pos_data['position_name'],
+                basis=lattice_basis,
+                origin_cart=origin_cart,
+                parsed_config=parsed_config,
+                repr_s_np=repr_s,
+                repr_p_np=repr_p,
+                repr_d_np=repr_d,
+                repr_f_np=repr_f,
+                spinor_mat_representation=spinor_mat_representation,
+                delta_vec=delta_vec
+            )
+            wyckoff_instance_id_tmp = atom.position_name + "_" + str(index)
+            atom.wyckoff_instance_id = wyckoff_instance_id_tmp
+            unit_cell_atoms.append(atom)
+    return unit_cell_atoms
+
+
+tol=1e-3
+unit_cell_atoms=generate_atoms_in_unit_cell(parsed_config, magnetic_space_group_cart_spatial, lattice_basis,origin_cart, repr_s, repr_p, repr_d, repr_f, spinor_mat_representation,delta_vec,tol)
