@@ -588,5 +588,211 @@ def generate_atoms_in_unit_cell(parsed_config,magnetic_space_group_cart_spatial,
     return unit_cell_atoms
 
 
+
+def compute_dist(center_atom, unit_cell_atoms, radius, search_range=10):
+    """
+    Find all atoms within a specified radius of a center atom by searching neighboring cells.
+    Returns constructed atomIndex objects for all neighbors found. The neighboring atom types are determined by
+    unit_cell_atoms.
+    Args:
+        center_atom:  atomIndex object for the center atom
+        unit_cell_atoms:  list of atomIndex objects in the reference unit cell [0,0,0]
+        radius:  cutoff distance in Cartesian coordinates (REQUIRED)
+        search_range:  ow many cells to search in each direction (default: 10)
+
+    Returns:
+        list: atomIndex objects within the specified radius, sorted by distance
+
+    """
+    neighbor_atoms = []
+    center_cart = center_atom.cart_coord
+    lattice_basis = center_atom.basis
+    origin_cart = center_atom.origin_cart
+    # Define the full search span
+    full_span = range(-search_range, search_range + 1)
+    n0_range = full_span
+    n1_range = full_span
+    n2_range = full_span
+    # Search through neighboring cells
+    for n0 in n0_range:
+        for n1 in n1_range:
+            for n2 in n2_range:
+                cell = [n0, n1, n2]
+                # print(f"cell={cell}")
+                # Check each atom in the unit cell
+                for unit_atom in unit_cell_atoms:
+                    # Compute Cartesian coordinates for this atom in the proposed cell
+                    candidate_cart = frac_to_cartesian(cell, unit_atom.frac_coord, lattice_basis, origin_cart)
+                    # print(f"candidate_cart={candidate_cart}")
+                    # Calculate distance
+                    dist = np.linalg.norm(candidate_cart - center_cart)
+                    # print(f"dist={dist}")
+                    # Only construct atom if it passes the distance check
+                    if dist <= radius:
+                        # Create atomIndex for this atom in the current cell with deep copies
+                        # print("creating atom")
+                        neighbor_atom = atomIndex(
+                            cell=deepcopy(cell),
+                            frac_coord=deepcopy(unit_atom.frac_coord),
+                            position_name=unit_atom.position_name,
+                            basis=deepcopy(lattice_basis),
+                            origin_cart=deepcopy(origin_cart),
+                            parsed_config=deepcopy(unit_atom.parsed_config),
+                            repr_s_np=deepcopy(unit_atom.repr_s_np),
+                            repr_p_np=deepcopy(unit_atom.repr_p_np),
+                            repr_d_np=deepcopy(unit_atom.repr_d_np),
+                            repr_f_np=deepcopy(unit_atom.repr_f_np),
+                            spinor_mat_representation=deepcopy(unit_atom.spinor_mat_representation),
+                            delta_vec=deepcopy(unit_atom.delta_vec)
+                        )
+                        neighbor_atom.wyckoff_instance_id = unit_atom.wyckoff_instance_id
+                        neighbor_atoms.append((dist, neighbor_atom))
+    # Sort by distance and return only the atomIndex objects
+    neighbor_atoms.sort(key=lambda x: x[0])
+    return [atom for dist, atom in neighbor_atoms]
+
+
+def find_identity_operation(magnetic_space_group_cart_spatial, spinor_mat_representation, delta_vec, tolerance=1e-9):
+    """
+    Find the index of the identity operation in space group matrices.
+    The identity operation has:
+    - Rotation part: 3×3 identity matrix
+    - Translation part: zero vector
+    - spinor part: 2×2 identity matrix
+    - delta: 1
+    Args:
+        magnetic_space_group_cart_spatial: List or array of  3×4 magnetic space group spatial part matrices [R|t]
+                                 in Cartesian coordinates
+        spinor_mat_representation: a list of spinor representations, each matrix is 2 × 2 unitary matrix
+        delta_vec: a vector of 1 and -1, indicating time reversal
+        tolerance: Numerical tolerance for comparison (default: 1e-9)
+
+    Returns:
+        int: Index of the identity operation
+    Raises:
+        ValueError: If identity operation is not found
+
+    """
+    identity_idx = None
+    for idx in range(len(magnetic_space_group_cart_spatial)):
+        # Extract rotation and translation using helper function
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, idx)
+
+        # 1. Check if the rotation matrix is the 3x3 identity matrix
+        is_R_identity = np.allclose(R, np.eye(3), atol=tolerance)
+
+        # 2. Check if the translation vector is the zero vector
+        is_t_zero = np.allclose(t, np.zeros(3), atol=tolerance)
+
+        # 3. Check if the spinor matrix is the 2x2 identity matrix
+        is_spinor_identity = np.allclose(spinor_mat_representation[idx], np.eye(2), atol=tolerance)
+
+        # 4. Check if delta is 1 (no time reversal) using float comparison
+        is_delta_one = np.isclose(delta_vec[idx], 1.0, atol=tolerance)
+
+        # If all conditions are satisfied, this is the identity operation
+        if is_R_identity and is_t_zero and is_spinor_identity and is_delta_one:
+            identity_idx = idx
+            break
+
+    if identity_idx is None:
+        raise ValueError("Identity operation not found in the provided magnetic space group operations.")
+
+    return identity_idx
+
 tol=1e-3
 unit_cell_atoms=generate_atoms_in_unit_cell(parsed_config, magnetic_space_group_cart_spatial, lattice_basis,origin_cart, repr_s, repr_p, repr_d, repr_f, spinor_mat_representation,delta_vec,tol)
+
+radius=parsed_config["truncation_radius"] # Cutoff distance in Cartesian coordinates
+                         # Only atoms within this distance from center are considered neighbors
+                         # FIXME: search_range must be sufficiently large to include all atoms within radius
+                         # TODO: may need an algorithm to deal with this in the next version of code
+                         # TODO: especially the vacuum layer length
+
+
+search_range=10 # Number of unit cells to search in each direction
+               # in general, for 1d, 2d, 3d problems, the search ranges is always [-10,10] × [-10,10] × [-10,10] ,
+               #because there is vacuum  layer
+               # for a 2d problem, the resulting range is often  [-10,10] × [-10,10] × [-1,1] ,
+               #since the 2d layer has thickness
+               # if atoms are found beyond vacuum layer, then set these hoppings=0
+               # Larger values find more distant neighbors but increase computation time
+               #TODO: should be computed from a0,a1, radius, vacuum layer length, etc
+
+
+# ==============================================================================
+# Find all neighbors for each atom in the unit cell
+# ==============================================================================
+# For each atom in the reference unit cell [0,0,0], find all neighboring atoms within
+# the specified radius by searching through neighboring unit cells.
+# This creates the hopping connectivity network for tight-binding calculations.
+
+all_neighbors = {}  # Dictionary mapping unit cell atom index → list of neighbor atomIndex objects
+                    # Key: integer index of center atom in unit_cell_atoms\
+                    # Value: list of atomIndex objects representing all neighbors within radius
+                    # Neighbors can be in different unit cells (n0, n1, n2)
+
+for i, unit_atom in enumerate(unit_cell_atoms):
+    # Find all neighbors within the specified radius for this center atom
+    # 1. Searches through neighboring unit cells within search_range
+    # 2. Constructs atomIndex objects for atoms in those cells
+    # 3. Filters by distance (keeps only atoms within radius)
+    # 4. Returns sorted list by distance
+    neighbors = compute_dist(
+        center_atom=unit_atom,  # Center atom (in unit cell [0,0,0])
+        unit_cell_atoms=unit_cell_atoms,  # Template atoms to replicate in neighboring cells
+        radius=radius,# Distance cutoff in Cartesian coordinates,
+        search_range=search_range ,  # How many cells to search in each direction
+    )
+    # Store the neighbor list using the unit cell atom index as key
+    # This creates a complete connectivity map: center_atom_idx --- [neighbor1, neighbor2, ...]
+    all_neighbors[i] = neighbors
+    # Print summary for each center atom
+    print(f"Unit cell atom {i} ({unit_atom.wyckoff_instance_id}): found {len(neighbors)} neighbors within radius {radius}")
+
+
+# ==============================================================================
+# Find identity operation
+# ==============================================================================
+# Locate the identity operation E in the list of space group operations.
+# The identity operation E = {identity matrix|0|delta=1} is characterized by:
+# - Rotation part: 3×3 identity matrix (no operation)
+# - Translation part: zero vector (no translation)
+# - delta=1, no time reversal
+#
+# The identity operation index is crucial because:
+# 1. It will be assigned to seed hoppings (root vertices in the constraint tree)
+#    Seed hoppings are those containing identity operation
+# 2. Root vertices in the vertex tree have hopping.operation_idx == identity_idx
+
+#
+# This index will be used throughout the code to:
+# - Distinguish between seed hoppings and derived hoppings
+# - Initialize root vertices in the constraint tree
+# - Verify that orbital representations preserve identity (V[identity_idx] = identity matrix)
+
+
+identity_idx = find_identity_operation(
+    magnetic_space_group_cart_spatial,
+    spinor_mat_representation,
+    delta_vec,tolerance=1e-8
+)
+# ==============================================================================
+# print atom orbital representations for all unit cell atoms
+# ==============================================================================
+print("\n" + "=" * 80)
+print("PRINTING ATOM ORBITAL REPRESENTATIONS")
+print("=" * 80)
+for i, atom in enumerate(unit_cell_atoms):
+    print(f"\nUnit cell atom {i} ({atom.wyckoff_instance_id}):")
+    print(f"  {atom}")
+    print(f"  Orbitals: {atom.get_orbital_names()}")
+    if atom.orbital_representations:
+        print(f"  Number of operations: {len(atom.orbital_representations)}")
+        V_identity = atom.get_representation_matrix(identity_idx)
+        print(f" Orbital representation's identity matrix shape: {V_identity.shape}")
+        print(f" Orbital representation's identity present: {np.allclose(V_identity, np.eye(V_identity.shape[0]))}")
+
+print("\n" + "=" * 80)
+print("ORBITAL REPRESENTATION VERIFICATION COMPLETE")
+print("=" * 80)
