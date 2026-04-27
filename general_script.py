@@ -796,3 +796,441 @@ for i, atom in enumerate(unit_cell_atoms):
 print("\n" + "=" * 80)
 print("ORBITAL REPRESENTATION VERIFICATION COMPLETE")
 print("=" * 80)
+
+def print_tree(root, prefix="", is_last=True, show_details=True, max_depth=None, current_depth=0):
+    """
+    Print a constraint tree structure in a visual hierarchical format.
+
+    Args:
+        root: vertex object (root of tree or subtree)
+        prefix: String prefix for indentation (used in recursion)
+        is_last: Boolean indicating if this is the last child (affects connector style)
+        show_details: Whether to show detailed hopping information (default: True)
+        max_depth: Maximum depth to print (None = unlimited, default: None)
+        current_depth: Current depth in recursion (internal use, default: 0)
+
+    Tree Structure Symbols:
+        ╔═══ ROOT     (root node)
+        ├── CHILD    (middle child)
+        └── CHILD    (last child)
+        │           (vertical line for continuation)
+
+    Example Output:
+        ╔═══ ROOT: N[0,0,0] ← N[0,0,0], op=0, d=0.0000
+        ├── CHILD (linear): N[0,0,0] ← N[1,0,0], op=1, d=2.5000
+        ├── CHILD (linear): N[0,0,0] ← N[-1,1,0], op=2, d=2.5000
+        └── CHILD (linear): N[0,0,0] ← N[0,-1,0], op=3, d=2.5000
+    """
+    # Check max depth
+    if max_depth is not None and current_depth > max_depth:
+        return
+
+    # Determine node styling
+    if root.is_root:
+        node_label = "ROOT"
+        connector = "╔═══ "
+        detail_prefix = prefix
+    else:
+        node_label = f"CHILD ({root.type})"
+        connector = "└── " if is_last else "├── "
+        detail_prefix = prefix + ("    " if is_last else "│   ")
+
+    # Build node description
+    hop = root.hopping
+
+    # Basic info: atom types and operation
+    to_cell = f"[{hop.to_atom.n0},{hop.to_atom.n1},{hop.to_atom.n2}]"
+    from_cell = f"[{hop.from_atom.n0},{hop.from_atom.n1},{hop.from_atom.n2}]"
+    basic_info = f"{hop.to_atom.wyckoff_instance_id}{to_cell} ← {hop.from_atom.wyckoff_instance_id}{from_cell}"
+
+    # Print main node line
+    if show_details:
+        print(f"{prefix}{connector}{node_label}: {basic_info}, "
+              f"op={hop.operation_idx}, dist={hop.distance:.4f}")
+    else:
+        print(f"{prefix}{connector}{node_label}: op={hop.operation_idx}")
+
+    # Print additional details if requested and this is root
+    if show_details and root.is_root and current_depth == 0:
+        print(f"{detail_prefix}    ├─ Type: {root.type}")
+        print(f"{detail_prefix}    ├─ Children: {len(root.children)}")
+        print(f"{detail_prefix}    └─ Distance: {hop.distance:.6f}")
+
+    # Recursively print children
+    if root.children:
+        for i, child in enumerate(root.children):
+            is_last_child = (i == len(root.children) - 1)
+
+            # Determine new prefix for children
+            if root.is_root:
+                new_prefix = ""
+            else:
+                new_prefix = prefix + ("    " if is_last else "│   ")
+
+            print_tree(child, new_prefix, is_last_child, show_details, max_depth, current_depth + 1)
+
+
+
+
+def print_all_trees(roots_list, show_details=True, max_trees=None, max_depth=None):
+    """
+    Print all constraint trees in a formatted way.
+
+    Args:
+        roots_list: List of root vertex objects
+        show_details: Whether to show detailed information (default: True)
+        max_trees: Maximum number of trees to print (None = all, default: None)
+        max_depth: Maximum depth to print for each tree (None = unlimited, default: None)
+    """
+    print("\n" + "=" * 80)
+    print("CONSTRAINT TREE STRUCTURES")
+    print("=" * 80)
+
+    # CRITICAL FIX: Filter to only include actual roots (is_root == True)
+    # ================================================================
+    # ADD THIS LINE RIGHT HERE - it filters out grafted vertices
+    actual_roots = [root for root in roots_list if root.is_root]
+
+    # Print diagnostic if non-root vertices found in the list
+    if len(actual_roots) < len(roots_list):
+        print(f"\nNote: Input list contained {len(roots_list)} vertices")
+        print(f"      Filtered to {len(actual_roots)} actual roots")
+        print(f"      ({len(roots_list) - len(actual_roots)} vertices were grafted as hermitian children)\n")
+
+    # Use actual_roots instead of roots_list for counting
+    num_trees = len(actual_roots) if max_trees is None else min(max_trees, len(actual_roots))
+
+    for i in range(num_trees):
+        root = actual_roots[i]  # Changed from roots_list[i] to actual_roots[i]
+        hop = root.hopping
+
+        print(f"\n{'─' * 80}")
+        print(f"Tree {i}: Distance = {hop.distance:.6f}, "
+              f"Hopping: {hop.to_atom.position_name} ← {hop.from_atom.position_name}")
+        print(f"{'─' * 80}")
+
+        print_tree(root, show_details=show_details, max_depth=max_depth)
+
+    if max_trees is not None and len(actual_roots) > max_trees:
+        print(f"\n... and {len(actual_roots) - max_trees} more trees")
+
+    print("\n" + "=" * 80)
+
+
+
+# ==============================================================================
+# Helper function for symmetry operations
+# ==============================================================================
+
+def cif_plus_translation(R,t,lattice_basis,n_vec,atom_cart):
+    """
+    Apply space group operation with lattice translation to an atom position.
+    Computes the full symmetry transformation:
+        r' = R @ r + t + n₀·a₀ + n₁·a₁ + n₂·a₂
+
+    where:
+        - R @ r is the rotation of the atom position
+        - t is the fractional translation (origin shift) from the cif space group operation
+        - n₀·a₀ + n₁·a₁ + n₂·a₂ is a lattice vector translation
+
+    This is the complete symmetry operation that includes the additional lattice
+    translation
+    Args:
+        R:  3×3 rotation matrix (in Cartesian coordinates, [0,0,0] origin)
+        t:  3D translation vector (in Cartesian coordinates, [0,0,0] origin)
+        lattice_basis:  3×3 array of primitive lattice basis vectors (each row is a basis vector)
+                          expressed in Cartesian coordinates using [0,0,0] origin
+        n_vec: Array [n₀, n₁, n₂] containing integer coefficients for lattice translation
+        atom_cart: 3D Cartesian position of the atom (using [0,0,0] origin)
+
+    Returns:
+            transformed_cart, 3D Cartesian position after applying the full symmetry operation
+    """
+    # Extract the three primitive lattice basis vectors (each row is one basis vector)
+    a0 = lattice_basis[0]  # First primitive basis vector
+    a1 = lattice_basis[1]  # Second primitive basis vector
+    a2 = lattice_basis[2]  # Third primitive basis vector
+    # Extract the integer coefficients for the lattice translation
+    # These determine how many unit cells to shift along each basis direction
+    n0 = n_vec[0]
+    n1 = n_vec[1]
+    n2 = n_vec[2]
+    # Apply the complete symmetry transformation:
+    # 1. R @ atom_cart: Apply rotation to the atom position
+    # 2. + t: Add the cif translation from the space group operation
+    # 3. + n0*a0 + n1*a1 + n2*a2: Add the lattice vector translation
+    #    This is the additional shift needed to preserve center atom invariance
+    transformed_cart = R @ atom_cart + t + n0 * a0 + n1 * a1 + n2 * a2
+    return transformed_cart
+
+def is_lattice_vector(vector, lattice_basis, tolerance=1e-3):
+    """
+    Check if a vector can be expressed as an integer linear combination of lattice basis vectors.
+     A vector v is a lattice vector if:
+        v = n0*a0 + n1*a1 + n2*a2
+    where n0, n1, n2 are integers and a0, a1, a2 are primitive lattice basis vectors.
+    Args:
+        vector:  3D vector to check (Cartesian coordinates)
+        lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+                      expressed in Cartesian coordinates using cif origin
+        tolerance: Numerical tolerance for checking if coefficients are integers (default: 1e-3)
+
+    Returns:
+        tuple: (is_lattice, n_vector)
+            - is_lattice (bool): True if vector is a lattice vector
+            - n_vector (ndarray): The integer coefficients [n0, n1, n2]
+
+    """
+    # Extract basis vectors (each row is a basis vector)
+    a0, a1, a2 = lattice_basis
+    # Create matrix with basis vectors as columns
+    lattice_matrix = np.column_stack([a0, a1, a2])
+    # Solve: vector = lattice_matrix @ [n0, n1, n2]
+    # So: [n0, n1, n2] = lattice_matrix^(-1) @ vector
+    n_vector_float = np.linalg.solve(lattice_matrix, vector)
+    # Round to nearest integers
+    n_vector = np.round(n_vector_float)
+    # Check if coefficients are integers (within tolerance)
+    is_lattice = np.allclose(n_vector_float, n_vector, atol=tolerance)
+    return is_lattice, n_vector
+
+def check_center_invariant(center_atom, operation_idx, magnetic_space_group_cart_spatial,
+                           lattice_basis, tolerance=1e-3):
+    """
+    Check if a center atom is invariant under a specific magnetic space group spatial part operation.
+     An atom is invariant if the symmetry operation maps it to itself, possibly
+     translated by a lattice vector. The actual operation is:
+        r' = R @ r + t + n0*a0 + n1*a1 + n2*a2
+    where n0, n1, n2 are integers and a0, a1, a2 are primitive lattice basis vectors.
+
+    For invariance, we need: r' = r, which means:
+        R @ r + t + n0*a0 + n1*a1 + n2*a2 = r
+        => (R - I) @ r + t = -(n0*a0 + n1*a1 + n2*a2)
+
+    Args:
+        center_atom:  atomIndex object representing the center atom
+        operation_idx: Index of the magnetic space group operation to check
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+                                 using cif origin (shape: num_ops × 3 × 4)
+        lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+                      expressed in Cartesian coordinates using cif origin
+        tolerance: Numerical tolerance for comparison (default: 1e-3)
+
+
+    Returns:
+        tuple: (is_invariant, n_vector)
+            - is_invariant (bool): True if the atom is invariant under the operation
+            - n_vector (ndarray): The integer coefficients [n0, n1, n2] for lattice translation
+    """
+    # Extract the rotation matrix R and translation vector t from the space group operation
+    R, t =get_rotation_translation(magnetic_space_group_cart_spatial, operation_idx)
+    # Get center atom's Cartesian position (using cif origin)
+    r_center = center_atom.cart_coord
+    # Compute the left-hand side of the invariance equation:
+    # (R - I) @ r + t
+    # For invariance, this must equal -(n0*a0 + n1*a1 + n2*a2) for integer n0, n1, n2
+    lhs = (R - np.eye(3)) @ r_center + t
+    # Check if -lhs can be expressed as an integer linear combination of lattice basis vectors
+    # If yes, then there exists a lattice translation that makes the atom invariant
+    # n_vector contains the integer coefficients [n0, n1, n2]
+    is_invariant, n_vector = is_lattice_vector(-lhs, lattice_basis, tolerance)
+    return is_invariant, n_vector
+
+def get_next_for_center(center_atom, seed_atom, center_seed_distance, magnetic_space_group_cart_spatial,
+                        operation_idx, parsed_config, tolerance=1e-3):
+    """
+    Apply a magnetic space group spatial part operation to a seed atom, conditioned on center atom invariance.
+    This function implements a three-step validation process:
+    1. Check if the center atom is invariant under the magnetic space group  spatial operation
+       (usually with lattice translation). This determines the lattice shift n_vec.
+    2. If invariant, apply the SAME operation (with the SAME n_vec) to the seed atom
+        to generate an atom's Cartesian coordinate. This atom should be symmetry-equivalent
+        to the seed atom.
+    3. Verify that the transformed seed maintains the same distance from center.
+
+    Physical Context:
+    Given a seed hopping (center ← seed), this function applies a symmetry operation
+    to generate a potentially equivalent hopping (center ← transformed_seed). The
+    transformed position is only returned if it preserves the hopping distance,
+    confirming it belongs to the same equivalence class, if the atom type also matches
+    Args:
+        center_atom: atomIndex object for the center atom (target of the hopping)
+        seed_atom: atomIndex object for the seed neighbor atom (origin of seed hopping)
+        center_seed_distance:  Pre-computed distance from center to seed atom
+                               (avoids redundant computation across operations)
+        magnetic_space_group_cart_spatial:  List of magnetic space group spatial part matrices in Cartesian coordinates
+                                using cif origin (shape: num_ops × 3 × 4)
+        operation_idx: Index of the magnetic space group operation to apply
+        parsed_config: Configuration dictionary containing lattice_basis
+        tolerance: Numerical tolerance for invariance and distance checks (default: 1e-3)
+        verbose: Whether to print debug information (default: False)
+
+    Returns:
+        numpy.ndarray, numpy.ndarray  or None:
+            - Transformed Cartesian coordinates if:
+              (a) center is invariant under this operation, AND
+              (b) transformation preserves the center-seed distance
+            - None otherwise (operation doesn't generate a valid equivalent hopping)
+    """
+    # ==============================================================================
+    # Extract space magnetic group operation components
+    # ==============================================================================
+    # Get the rotation matrix R and translation vector b from the magnetic space group operation
+    # The operation is represented as [R|b] in Cartesian coordinates
+    R, b = get_rotation_translation(magnetic_space_group_cart_spatial, operation_idx)
+
+    # ==============================================================================
+    # Get lattice basis vectors
+    # ==============================================================================
+    # Extract the primitive lattice basis vectors from configuration
+    # These are the fundamental translation vectors a0, a1, a2 of the crystal
+    lattice_basis = np.array(parsed_config['lattice_basis'])
+    # ==============================================================================
+    # STEP 1: Check center atom invariance
+    # ==============================================================================
+    # Determine if the center atom is invariant under this space group operation,
+    # usually with an additional lattice translation.
+    ## Mathematical condition for invariance:
+    #   R @ r_center + b + n_vec · [a0, a1, a2] = r_center
+    # where n_vec = [n0, n1, n2] are integer coefficients for lattice translation
+    #
+    # This ensures that the symmetry operation preserves the hopping target -
+    # the center atom remains at the same atomic site.
+    #
+    # Returns:
+    #   is_invariant: True if center atom is invariant (with some lattice shift)
+    #   n_vec: The required lattice translation [n0, n1, n2] for invariance
+    is_invariant, n_vec = check_center_invariant(
+        center_atom,
+        operation_idx,
+        magnetic_space_group_cart_spatial,
+        lattice_basis,
+        tolerance
+    )
+    # ==============================================================================
+    # STEP 2: Apply operation to seed atom (only if center is invariant)
+    # ==============================================================================
+    if is_invariant:
+        # Center atom is invariant under this operation (with lattice shift n_vec)
+        # Now apply the SAME complete transformation to the seed atom:
+        #   r_transformed = R @ r_seed + b + n_vec · [a0, a1, a2]
+        #
+        # KEY INSIGHT: We must use the SAME n_vec for the seed!
+        # This ensures the hopping vector (r_center - r_seed) transforms consistently,
+        # preserving the relative geometry of the hopping.
+        ## The transformed position may correspond to an atom that is symmetry-equivalent
+        # to the seed atom (same species, equivalent local environment).
+        seed_cart_coord = seed_atom.cart_coord  # Original seed position
+        # Apply the full symmetry transformation: R @ r + b + lattice_shift
+        # This generates a Cartesian coordinate that may represent a symmetry-equivalent atom
+        next_cart_coord = cif_plus_translation(R, b, lattice_basis, n_vec, seed_cart_coord)
+        # ==============================================================================
+        # STEP 3: Verify the transformation preserves hopping distance (isometry check)
+        # ==============================================================================
+        # Calculate the distance from the transformed position to center
+        # For a valid symmetry operation (isometry), this must equal the original distance
+        new_center_seed_dist = np.linalg.norm(next_cart_coord - center_atom.cart_coord, ord=2)
+        # Check if the hopping distance is preserved
+        # This verifies that: |r_center - (R @ r_seed + b + lattice_shift)| = |r_center - r_seed|
+        dist_is_equal = (np.abs(new_center_seed_dist - center_seed_distance) < tolerance)
+        # Only return the transformed position if distance is preserved
+        # This ensures the generated coordinate represents a symmetry-equivalent atom
+        if dist_is_equal == True:
+            return (deepcopy(next_cart_coord), deepcopy(n_vec))
+        else:
+            # Distance not preserved - this indicates a numerical error or
+            # inconsistency in the symmetry operation (shouldn't happen in practice)
+            return None,None
+
+    else:
+        # ==============================================================================
+        # Center atom is NOT invariant - operation invalid for this hopping
+        # ==============================================================================
+        # The center atom does not map to itself (even with lattice translations)
+        # under this magnetic space group operation. Therefore, abandon this symmetry operation
+        return None,None
+
+
+def search_one_equivalent_atom(seed_atom,target_cart_coord, neighbor_atoms_copy, tolerance=1e-3):
+    """
+    Search for an atom in the neighbor_atoms_copy set whose Cartesian coordinate matches the target.
+    This function is used to find which actual neighbor atom corresponds to a transformed
+    position generated by a symmetry operation. If a match is found, it confirms that
+    the symmetry operation maps the seed atom to an existing neighbor atom.
+    Args:
+        seed_atom: atomIndex object for the seed neighbor atom (origin of seed hopping)
+        target_cart_coord: 3D Cartesian coordinate to search for (numpy array)
+                            This is  the result of applying a symmetry operation
+                            to a seed atom's position
+        neighbor_atoms_copy: set of atomIndex objects representing all neighbors
+                         of a center atom within some cutoff radius
+        tolerance:   Numerical tolerance for coordinate comparison (default: 1e-3)
+                    Two positions are considered identical if their Euclidean distance
+                    is less than this tolerance
+
+
+    Returns:
+        atomIndex or None:
+          - The matching neighbor atom if found (coordinate matches within tolerance)
+            IMPORTANT: Returns a REFERENCE (not a copy) to the atomIndex object in neighbor_atoms
+          - None if no match is found (transformed position doesn't correspond to
+            any actual neighbor atom)
+
+    """
+    # Iterate through all neighbor atoms in the set
+    for neighbor in neighbor_atoms_copy:
+        # Compute Euclidean distance between target position and this neighbor's position
+        distance = np.linalg.norm(target_cart_coord - neighbor.cart_coord, ord=2)
+        # Check if the distance is within tolerance (positions match)
+        if distance < tolerance and seed_atom.position_name == neighbor.position_name:
+            # Return a REFERENCE (pointer in C sense, reference in C++ sense) to the matching neighbor atom
+            # This is NOT a deep copy - it's the same object that exists in neighbor_atoms_copy
+            # This allows the caller to use this reference to remove the atom from neighbor_atoms_copy
+            return neighbor
+    return None
+
+
+def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, all_neighbors,
+                                                magnetic_space_group_cart_spatial, identity_idx,
+                                                tolerance=1e-3):
+    """
+    Partition all neighbors of 1 center atom into equivalence classes based on symmetry.
+    Each equivalence class contains center atom's neighbors related by magnetic space group spatial part operations.
+    Algorithm:
+    ---------
+    1. Pop a seed atom from the remaining neighbors (arbitrary choice)
+    2. Apply all magnetic space group spatial part operations to find symmetry-equivalent neighbors
+    3. Group these equivalent neighbors together into one equivalence class
+    4. Repeat until all neighbors are classified
+
+    CRITICAL: Reference Handling
+    ============================
+    This function works with REFERENCES to atomIndex objects throughout:
+    - neighbor_atoms_copy is a set of references to DEEP-COPIED atomIndex objects
+    - seed_atom = set.pop() returns a reference to one of these copied objects
+    - matched_neighbor from search is also a reference to one of these copied objects
+    - equivalence_classes stores tuples containing references to these copied objects
+
+    Why deep copy all_neighbors[center_atom_idx]?
+    ---------------------------------------------
+    We deep copy to DECOUPLE from the input:
+    1. The input all_neighbors should remain unchanged (it may be used elsewhere)
+    2. We destructively remove atoms from neighbor_atoms_copy as we classify them
+    3. Deep copy creates NEW atomIndex objects (independent of the input)
+    4. After deep copy:
+        - all_neighbors[center_atom_idx] still has all its original atomIndex objects
+        - neighbor_atoms_copy has completely separate atomIndex objects with same data
+        - Modifying neighbor_atoms_copy has NO effect on all_neighbors
+
+    Args:
+        center_atom_idx: Index of the center atom in unit_cell_atoms
+        unit_cell_atoms: List of all atomIndex objects in the unit cell
+        all_neighbors: Dictionary mapping center atom index → list of neighbor atomIndex objects
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+        identity_idx: Index of the identity operation
+        tolerance: Numerical tolerance for comparisons (default: 1e-3)
+
+
+    Returns:
+
+    """

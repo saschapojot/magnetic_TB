@@ -337,3 +337,187 @@ class hopping:
                 f"op={self.operation_idx}, "
                 f"distance={distance_str}"
                 f"{seed_marker})")
+
+
+
+# ==============================================================================
+# vertex class
+# ==============================================================================
+
+class vertex():
+    """
+    Represents a node in the symmetry constraint tree for tight-binding hopping matrices.
+    Each vertex contains a hopping object, the hopping object contains hopping matrix of to_atom (center) ← from_atom (neighbor)
+    The tree structure represents how parent hopping generates this hopping by magnetic space group operations or Hermiticity constraints.
+
+    Tree Structure:
+        - Root vertex: Corresponds to the seed hopping (identity operation)
+        - Child vertices: Hoppings derived from parent through symmetry operations or Hermiticity
+        - Constraint types: "linear" (from magnetic space group) or "hermitian" (from H† = H)
+
+    The tree is used to:
+    1. Express derived hopping matrices in terms of independent matrices (in root)
+    2. Enforce symmetry constraints automatically
+    3. Reduce the number of independent tight-binding parameters
+
+    CRITICAL: Tree Structure Uses References (Pointers)
+    ================================================
+    The parent-child relationships are implemented using REFERENCES (C++ sense) / POINTERS (C sense):
+    - self.parent stores a REFERENCE to the parent vertex object (not a copy)
+    - self.children stores a list of REFERENCES to child vertex objects (not copies)
+
+    This means:
+    - Multiple vertices can reference the same parent object
+    - Modifying a parent's hopping matrix T affects all children's constraint calculations
+    - The tree forms a true graph structure in memory with shared nodes
+    - Deleting a vertex requires careful handling to avoid dangling references
+
+
+    Memory Diagram Example:
+    ----------------------
+    Root Vertex (id=0x1000) ──┬──> Child 0, linear (address=0x2000, parent address=0x1000)
+                              ├──> Child 1, linear (address=0x3000, parent address=0x1000)
+                              └──> Child 2, hermitian (address=0x4000, parent address=0x1000)
+    All three children have parent=0x1000 (same memory address)
+    Root's self.children = [0x2000, 0x3000, 0x4000] (references, not copies)
+    """
+
+    def __init__(self, hopping, type, identity_idx, parent=None):
+        """
+        Initialize a vertex in the tree.
+        Args:
+            hopping:  hopping object representing the tight-binding term: center ← neighbor
+                      Contains the hopping matrix T between orbital basis, T's row represents: center atom orbitals with spin,
+                      T's column represents: neighbor atom orbitals with spin
+                      one element in T is the hopping coefficient from one orbital with spin in neighbor atom to
+                      one orbital with spin in center atom
+            type:      Constraint type that shows how this vertex is derived from its parent
+                            - "linear": Derived from parent via magnetic space group symmetry operation
+                            - "hermitian": Derived from parent via Hermiticity constraint
+                            - None: It is root vertex
+
+            identity_idx:  Index of the identity operation in magnetic space group
+                           Used to identify root vertices (hopping.operation_idx == identity_idx)
+            parent: REFERENCE to parent vertex object (default: None for root)
+                    NOT deep copied - this is a reference (C++ sense) / pointer (C sense)
+
+                    Why parent is a reference:
+                    -------------------------
+                    1. Upward Traversal: Allows child → parent → root navigation
+                    2. Constraint Access: Child can read parent's hopping matrix T
+                    3. Shared Parent: Multiple children reference same parent object
+                    IMPORTANT: parent=None only for root vertices
+                               parent≠None for all derived vertices (children)
+        """
+        self.hopping = deepcopy(hopping)  # Deep copy of hopping object containing:
+                                          # - to_atom (center), from_atom (neighbor)
+                                          # - is_seed, operation_idx
+                                          # - rotation_matrix R, translation_vector t, n_vec, spinor_mat,delta, is_seed
+                                          # - distance, T (hopping matrix)
+
+        self.type = type  # Constraint type: None (root), "linear" (symmetry), or "hermitian"
+                          # String is immutable, safe to assign directly
+
+        self.is_root = (hopping.operation_idx == identity_idx)  # Boolean flag identifying root vertex
+                                                                # Root vertex contains identity operation
+                                                                # Starting vertex of hopping matrix T propagation
+
+        self.children = []  # List of REFERENCES to child vertex objects
+                            # CRITICAL: These are references (pointers), NOT deep copies!
+                            #
+                            # Why references are essential:
+                            # -----------------------------
+                            # 1. Tree Structure: Forms true parent-child graph in memory
+                            # 2. Constraint Propagation: Changes to root's T affect tree traversal
+                            # 3. Memory Efficiency: Avoids duplicating entire subtrees
+                            # 4. Bidirectional Links: Children can access parent via self.parent
+                            #
+                            # Usage:
+                            # ------
+                            # - Empty list [] at initialization (no children yet)
+                            # - Populated via add_child() method with vertex references
+                            # - Each element points to a vertex object in memory
+                            #
+                            # WARNING: Do NOT deep copy children when copying a vertex!
+                            #          This would break the tree structure.
+
+        self.parent = parent  # Reference to parent vertex (None for root)
+                              # NOT deep copied, because this is reference (reference in C++ sense, pointer in C sense)
+                              # Forms bidirectional directed tree: parent ↔ children
+
+    def add_child(self, child_vertex):
+        """
+        Add a child vertex to this vertex and set bidirectional parent-child relationship.
+
+        CRITICAL: Reference-Based Tree Construction
+        ===========================================
+        This method establishes bidirectional links using REFERENCES (pointers):
+        Before call:
+        -----------
+        self (parent vertex at address 0x1000):
+            self.children = [0x2000, 0x3000]  # existing children
+        child_vertex (at address 0x4000):
+            child_vertex.parent = None  # or some other parent #or this child is a root, we are adding a subtree
+
+
+
+        Args:
+            child_vertex:  vertex object to add as a child
+                           The child represents a hopping derived from this vertex's hopping
+                           either through symmetry operation (type="linear")
+                           or Hermiticity (type="hermitian")
+
+                           IMPORTANT: child_vertex is NOT deep copied
+                                      The REFERENCE to child_vertex is stored in self.children
+
+
+        Returns:
+            None (modifies self.children and child_vertex.parent in-place)
+
+        """
+        self.children.append(child_vertex)  # Add REFERENCE to child_vertex to this vertex's children list
+                                            # NOT a deep copy - the actual vertex object reference
+                                            # After this: self.children[-1] is child_vertex (same object)
+                                            #
+                                            # Memory effect:
+                                            # - self.children list grows by 1 element
+                                            # - That element is a reference (memory address) to child_vertex
+                                            # - No new vertex object is created
+
+        child_vertex.parent = self  # Set bidirectional relationship: this vertex becomes the child's parent
+                                    # Stores new vertex parent's REFERENCE (C++ sense) / POINTER (C sense) to the new vertex
+                                    # NOT a deep copy - the actual parent vertex object reference
+                                    # After this: child_vertex.parent is self (same object)
+                                    #
+                                    # Memory effect:
+                                    # - child_vertex.parent now points to self's memory address
+                                    # - Creates upward link in tree: child → parent
+                                    # - Combined with append above: creates bidirectional edge
+                                    # WARNING: This overwrites any previous parent!
+
+    def __repr__(self):
+        """
+        String representation for debugging and display.
+        Shows the vertex's role in the tree (ROOT or CHILD), constraint type,
+        operation index, parent information, and number of children.
+        Returns: str: Compact representation showing vertex type, operation, parent, and children count
+                      Format: "vertex(type=<type>, <ROOT/CHILD>, op=<op_idx>, parent=<parent_info>, children=<count>)"
+
+        """
+        # Determine if this is a root or child vertex
+        root_str = "ROOT" if self.is_root else "CHILD"
+
+        # Show parent's operation index if parent exists, otherwise "None"
+        # Parent is None for root vertices
+        parent_str = "None" if self.parent is None else f"op={self.parent.hopping.operation_idx}"
+        # Return formatted string with key vertex information:
+        # - type: constraint type (None, "linear", or "hermitian")
+        # - ROOT/CHILD: vertex role in tree
+        # - op: this vertex's space group operation index
+        # - parent: parent's operation index or "None"
+        # - children: number of child vertices
+        return (f"vertex(type={self.type}, {root_str}, "
+                f"is_root={self.is_root}, "
+                f"op={self.hopping.operation_idx}, "
+                f"parent={parent_str}, "
+                f"children={len(self.children)})")
