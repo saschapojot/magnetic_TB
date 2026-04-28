@@ -14,7 +14,7 @@ from name_conventions import orbital_map, processed_input_pkl_file_name, type_li
 
 sp.init_printing(use_unicode=False, wrap_line=False)
 
-from classes.class_defs import frac_to_cartesian, atomIndex
+from classes.class_defs import frac_to_cartesian, atomIndex,hopping, vertex
 # this script computes for magnetic space group system
 
 # ==============================================================================
@@ -1232,5 +1232,524 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
 
 
     Returns:
+        List of equivalence classes, where each class is a list of tuples:
+        (matched_neighbor, operation_idx, n_vec)
+        where:
+            - matched_neighbor: REFERENCE to deep-copied atomIndex object
+            - operation_idx: Space group operation that maps seed → matched_neighbor
+            - n_vec: Lattice translation vector [n₀, n₁, n₂] for this transformation
 
     """
+    # ==============================================================================
+    # Initialize working variables
+    # ==============================================================================
+    # Extract reference to center atom from unit cell
+    # This is a REFERENCE (not copied) - center_atom points to the same object in unit_cell_atoms
+    center_atom = unit_cell_atoms[center_atom_idx]
+    # print(f"center_atom={center_atom}")
+    # Create a working copy of neighbors as a set
+    # IMPORTANT: Deep copy to DECOUPLE from input all_neighbors
+    # ----------------------------------------------------------
+    # Why deep copy?
+    # - We will destructively remove atoms from neighbor_atoms_copy as we classify them
+    # - We must NOT modify the input all_neighbors (caller may need it unchanged)
+    # - Deep copy creates entirely NEW atomIndex objects (different memory addresses)
+    #   with the same data as the originals
+    #
+    # Memory structure after deep copy:
+    # - all_neighbors[center_atom_idx] = [obj_A, obj_B, obj_C, ...]  (original objects)
+    # - neighbor_atoms_copy = {obj_A', obj_B', obj_C', ...}  (NEW copied objects)
+    # - obj_A and obj_A' are DIFFERENT objects at DIFFERENT memory addresses
+    # - obj_A and obj_A' have the SAME data (same coordinates, same element, etc.)
+    # - Removing obj_A' from neighbor_atoms_copy does NOT affect all_neighbors
+    #
+    # Why set instead of list?
+    # - O(1) removal with set.remove() vs O(n) with list.remove()
+    # - No duplicates guaranteed
+    # - Order doesn't matter (symmetry operations find all equivalents)
+    neighbor_atoms_copy = set(deepcopy(all_neighbors[center_atom_idx]))
+    # Store all equivalence classes (list of lists of tuples)
+    equivalence_classes = []
+    # Class ID counter (increments for each new equivalence class found)
+    class_id = 0
+    # ==============================================================================
+    # Main loop: Partition neighbors into equivalence classes
+    # ==============================================================================
+    # Continue until all neighbors are classified into equivalence classes
+    # Each iteration creates one equivalence class and removes its members from neighbor_atoms_copy
+    while len(neighbor_atoms_copy) != 0:
+        # ==============================================================================
+        # STEP 1: Select seed atom for this equivalence class
+        # ==============================================================================
+        # Pop one seed atom from neighbor_atoms_copy
+        # This will be the representative atom for this equivalence class
+        #
+        # CRITICAL: set.pop() returns a REFERENCE, not a copy
+        # ------------------------------------------------
+        # - set.pop() removes and returns a reference to an arbitrary element
+        # - Order is implementation-dependent (hash table internals, not guaranteed)
+        # - Returns a REFERENCE to one of the deep-copied atomIndex objects
+        # - The atomIndex object is removed from the set but still exists in memory
+        # - seed_atom now holds a reference to that object
+        #
+        # Example:
+        # -------
+        # Before: neighbor_atoms_copy = {obj_A', obj_B', obj_C'}
+        # After:  seed_atom = obj_A' (reference to the copied object)
+        #         neighbor_atoms_copy = {obj_B', obj_C'}
+        #
+        # Remember: obj_A' is a COPY (independent of the original obj_A in all_neighbors)
+        #
+        # The specific choice doesn't matter - symmetry operations will find all equivalent neighbors
+        seed_atom = neighbor_atoms_copy.pop()
+        # Pre-compute the distance from center to seed (used for all operations)
+        # This distance must be preserved by symmetry operations (isometry)
+        center_seed_distance = np.linalg.norm(center_atom.cart_coord - seed_atom.cart_coord, ord=2)
+        # ==============================================================================
+        # Initialize the current equivalence class
+        # ==============================================================================
+        # List of tuples: (neighbor_atom_reference, operation_idx, n_vec)
+        current_equivalence_class = []
+        # ==============================================================================
+        # STEP 2: Find all symmetry-equivalent neighbors
+        # ==============================================================================
+        # Iterate through all space group operations to find atoms equivalent to seed
+        # Skip the identity operation since we already added the seed atom
+        for operation_idx in range(len(magnetic_space_group_cart_spatial)):
+            # Skip identity operation (already handled)
+            if operation_idx == identity_idx:
+                continue
+            # Apply the space group operation to the seed atom
+            # This generates a transformed position that may correspond to another neighbor
+            # Returns (transformed_coord, n_vec) if valid, None otherwise
+            result = get_next_for_center(
+                center_atom=center_atom,
+                seed_atom=seed_atom,
+                center_seed_distance=center_seed_distance,
+                magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
+                operation_idx=operation_idx,
+                parsed_config=parsed_config,
+                tolerance=tolerance
+            )
+            # ==============================================================================
+            # Process valid transformation results
+            # ==============================================================================
+            # If transformation is valid (center invariant, distance preserved)
+            if result is not None:
+                # Unpack the transformed coordinate and lattice shift vector
+                # transformed_coord: 3D Cartesian position after applying symmetry operation
+                # n_vec: Lattice translation [n₀, n₁, n₂] needed to preserve center invariance
+                transformed_coord, n_vec = result
+                # ==============================================================================
+                # Search for matching neighbor in the remaining unclassified set
+                # ==============================================================================
+                # Search for this transformed position among the remaining neighbors
+                # CRITICAL: matched_neighbor is a REFERENCE, not a copy
+                # ---------------------------------------------------
+                # search_one_equivalent_atom() returns:
+                # - A REFERENCE to an atomIndex object in neighbor_atoms_copy if match found
+                # - None if no match found
+                #
+                # This reference is ESSENTIAL for set.remove() to work:
+                # - Python's set.remove() uses object identity (memory address)
+                # - We need the EXACT SAME object reference that's in the set
+                # - A copy wouldn't work (different object, different identity)
+                #
+                # Remember: matched_neighbor references a COPIED atomIndex object (obj_X')
+                # NOT an original from all_neighbors (obj_X)
+                matched_neighbor = search_one_equivalent_atom(
+                    seed_atom,
+                    target_cart_coord=transformed_coord,
+                    neighbor_atoms_copy=neighbor_atoms_copy,
+                    tolerance=tolerance
+                )
+                # ==============================================================================
+                # Add matched neighbor to equivalence class
+                # ==============================================================================
+                # If we found a matching neighbor in the remaining set
+                if matched_neighbor is not None:
+                    # Add to current equivalence class
+                    # Store tuple: (reference to matched_neighbor, operation_idx, copy of n_vec)
+                    # - matched_neighbor: REFERENCE to a deep-copied atomIndex object (from neighbor_atoms_copy)
+                    # - operation_idx: Which space group operation maps seed → matched_neighbor
+                    # - deepcopy(n_vec): Copy of lattice translation vector (n_vec is numpy array, mutable)
+                    current_equivalence_class.append((matched_neighbor, operation_idx, deepcopy(n_vec)))
+                    # Remove from the working set (it's now classified)
+                    # CRITICAL: This only works because matched_neighbor is a REFERENCE
+                    # ----------------------------------------------------------------
+                    # set.remove() searches for object by identity (memory address)
+                    # - matched_neighbor points to the exact same object in neighbor_atoms_copy
+                    # - Python finds the object by comparing memory addresses (fast, O(1))
+                    # - If matched_neighbor were a copy, remove() would raise KeyError
+                    #
+                    # After removal:
+                    # - The atomIndex object still exists in memory (referenced by matched_neighbor
+                    #   and by the tuple in current_equivalence_class)
+                    # - It's just no longer in the neighbor_atoms_copy set
+                    # - The original object in all_neighbors is completely unaffected
+                    neighbor_atoms_copy.remove(matched_neighbor)
+        # ==============================================================================
+        # Complete this equivalence class
+        # ==============================================================================
+        # Add the completed equivalence class to the list
+        # equivalence_classes is a list of lists of tuples
+        # Each tuple contains: (reference to deep-copied atomIndex, operation_idx, n_vec)
+        equivalence_classes.append(current_equivalence_class)
+        # Increment class ID for next equivalence class
+        class_id += 1
+
+    # ==============================================================================
+    # Return results
+    # ==============================================================================
+    return equivalence_classes
+
+
+def equivalent_class_to_hoppings(one_equivalent_class, center_atom,
+                                  magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec, identity_idx):
+    """
+    Convert an equivalence class of neighbor atoms into hopping objects.
+    Each neighbor atom in the equivalence class is saved into a hopping object.
+    The hopping contains all symmetry information (operation index, rotation, translation, lattice shift).
+
+    This function transforms the raw equivalence class data (tuples of neighbor atoms,
+    operations, and lattice shifts) into structured hopping objects that encapsulate
+    all information needed for one class of equivalent hoppings (center ← neighbor) and symmetry constraints.
+
+    Args:
+        one_equivalent_class: List of tuples (neighbor_atom, operation_idx, n_vec)
+                              where:
+                                - neighbor_atom: atomIndex object for the neighbor
+                                - operation_idx: Index of space group operation that maps
+                                              seed atom to this neighbor
+                                - n_vec: Array [n₀, n₁, n₂] of lattice translation coefficients
+        center_atom: atomIndex object for the center atom (hopping destination)
+                    All hoppings in this equivalence class have the same center atom
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+                                using cif origin (shape: num_ops × 3 × 4)
+                                Used to extract rotation R and translation t for each operation
+        spinor_mat_representation: spinor part matrices
+        delta_vec: indicating time reversal, values are ±1
+        identity_idx: Index of the identity operation in magnetic_space_group_cart_spatial
+                     Used to identify which hopping is the seed (root of constraint tree)
+
+    Returns:
+        List of hopping objects (deep copied for complete independence).
+        Each hopping represents: center ← neighbor
+        The list contains:
+            - One seed hopping (with operation_idx == identity_idx, is_seed=True)
+            - Multiple derived hoppings (with other operation indices, is_seed=False)
+        All hoppings in the list have the same distance (up to numerical precision)
+    Deep Copy Strategy:
+        This function returns a DEEP COPY of the entire hopping list to ensure
+        complete independence between the returned data and any internal state.
+        Two-level protection:
+            1. Each hopping object is deep copied before adding to the list
+            2. The entire list is deep copied before returning
+        This guarantees:
+            - No shared references to the list container
+            - No shared references to hopping objects
+            - No shared references to atom objects or numpy arrays
+            - Caller has complete ownership and can modify freely
+
+
+    """
+    # Initialize hopping list
+    hoppings = []
+    # Convert each equivalence class member to a hopping object
+    for neighbor_atom, operation_idx, n_vec in one_equivalent_class:
+        # Extract rotation matrix R and translation vector t for this operation
+        # The magnetic space group spatial part operation [R|t] transforms the seed neighbor to this neighbor
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, operation_idx)
+        spinor_mat=spinor_mat_representation[operation_idx]
+        delta=delta_vec[operation_idx]
+        # Determine if this is the seed hopping (generated by identity operation)
+        # The seed hopping serves as the root of the constraint tree
+        is_seed = (operation_idx == identity_idx)
+        # Create hopping object: center ← neighbor
+        # This represents the tight-binding hopping from neighbor to center atom
+        hop = hopping(
+            to_atom=deepcopy(center_atom),  # Destination: center atom (deep copied)
+            from_atom=deepcopy(neighbor_atom),  # Source: neighbor atom (deep copied),
+            operation_idx=operation_idx,  # Space group operation index (immutable int),
+            rotation_matrix=deepcopy(R),  # 3×3 rotation matrix from cif (deep copied)
+            translation_vector=deepcopy(t),  # 3D translation vector from cif (deep copied)
+            n_vec=deepcopy(n_vec),  # Additional lattice shift [n₀, n₁, n₂] (deep copied)
+            spinor_mat=spinor_mat,
+            delta=delta,
+            is_seed=is_seed
+        )
+        # Compute the Euclidean distance from neighbor to center
+        # All hoppings in this equivalence class should have the same distance
+        hop.compute_distance()
+        # Add this hopping to the list
+        # Deep copy hopping before adding to list (first level of protection)
+        hoppings.append(deepcopy(hop))
+
+    # Deep copy entire list before returning (second level of protection)
+    # This ensures complete independence: both list structure and contents are copied
+    return deepcopy(hoppings)
+
+
+def hopping_to_vertex(hopping,identity_idx,type_linear):
+    """
+    Convert a hopping object to a vertex object., for equivalent class step
+    Args:
+        hopping:  hopping object to convert
+        identity_idx:  Index of the identity operation
+        type_linear:  string "linear"
+
+    Returns:
+        vertex object (deep copied for independence)
+
+
+    """
+    # Determine constraint type based on whether this is a seed hopping
+    if hopping.is_seed == True:
+        constraint_type = None  # Root vertex has no parent constraint
+    else:
+        constraint_type = type_linear  # Derived from symmetry operation
+    # Create vertex with no parent (parent will be set when building tree)
+    new_vertex = vertex(hopping,
+                        constraint_type,
+                        identity_idx,
+                        parent=None)
+
+    return deepcopy(new_vertex)
+
+
+def one_equivalent_hopping_class_to_root(one_equivalent_hopping_class, identity_idx, type_linear):
+    """
+    Convert an equivalent hopping class into a constraint tree.
+
+    This function:
+    1. Converts all hoppings to vertex objects
+    2. Finds the root vertex (seed hopping with identity operation)
+    3. Connects all derived vertices as linear children of the root
+    4. Returns the root vertex (which contains references to all children)
+
+    Tree Structure Created:
+    ----------------------
+                    Root (seed, identity operation)
+                     |
+         +-----------+-----------+-----------+
+         |           |           |           |
+      Child 0     Child 1     Child 2     Child 3
+     (linear)    (linear)    (linear)    (linear)
+
+    Each child is derived from root by a symmetry operation.
+    Args:
+        one_equivalent_hopping_class: List of hopping objects (all symmetry-equivalent)
+        identity_idx: Index of the identity operation
+        type_linear: String identifier for linear constraint type (string "linear")
+
+    Returns:
+        vertex object: Root of the constraint tree (contains references to all children)
+    Raises:
+        ValueError: If no root vertex found (no seed hopping in the class)
+    """
+    # ==============================================================================
+    # STEP 1: Convert all hoppings to vertices
+    # ==============================================================================
+    vertex_list = [hopping_to_vertex(one_hopping, identity_idx, type_linear) for one_hopping in
+                   one_equivalent_hopping_class]
+    # ==============================================================================
+    # STEP 2: Find the root vertex (seed hopping)
+    # ==============================================================================
+    tree_root = None
+    derived_vertices = []  # List to store non-root vertices
+    for one_vertex in vertex_list:
+        if one_vertex.is_root == True:
+            if tree_root is not None:
+                # Multiple roots found - this shouldn't happen
+                raise ValueError("Multiple root vertices found in equivalence class! "
+                                 "Each class should have exactly one seed hopping.")
+            tree_root = one_vertex
+        else:
+            derived_vertices.append(one_vertex)
+
+    # ==============================================================================
+    # STEP 3: Validate that root was found
+    # ==============================================================================
+    if tree_root is None:
+        raise ValueError("No root vertex found in equivalence class! "
+                         f"Identity operation (idx={identity_idx}) not present.")
+    # ==============================================================================
+    # STEP 4: Connect all derived vertices as children of root
+    # ==============================================================================
+    # CRITICAL: Use add_child() to establish bidirectional parent-child relationships
+    # This creates REFERENCES (not copies) between root and children
+    for i, child_vertex in enumerate(derived_vertices):
+        tree_root.add_child(child_vertex)
+
+    # ==============================================================================
+    # STEP 5: Return the root vertex
+    # ==============================================================================
+    # IMPORTANT: Return tree_root WITHOUT deep copying
+    # ------------------------------------------------
+    # The tree_root contains REFERENCES to its children via tree_root.children
+    # Deep copying would break these parent-child references
+    # Caller receives the actual root vertex object with intact tree structure
+    return tree_root
+
+
+def atom_equal(atom1, atom2,tolerence=1e-3):
+    """
+    check if two atoms occupy the same position
+    Args:
+        atom1:
+        atom2:
+
+    Returns:
+
+    """
+    dist_diff=np.linalg.norm(atom1.cart_coord-atom2.cart_coord,ord=2)
+    if dist_diff<tolerence and atom1.position_name==atom2.position_name:
+        return True
+    else:
+        return False
+
+
+def apply_full_transformation_and_check_position(atom1,atom2,R,t,lattice_basis,n_vec,tolerance=1e-3):
+    #checks if full transformation applied to atoms1 goes to atom2
+    atom1_pos=atom1.cart_coord
+    atom2_pos=atom2.cart_coord
+
+    atom1_transformed_pos=cif_plus_translation(R,t,lattice_basis,n_vec,atom1_pos)
+    diff=np.linalg.norm(atom1_transformed_pos-atom2_pos,ord=2)
+    if diff<tolerance:
+        return True
+    else:
+        return False
+
+
+def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,delta_vec,
+                            lattice_basis, tolerance=1e-3):
+    """
+    Check if hopping2 is related to hopping1 by a space group symmetry operation.
+     For tight-binding models, a linear symmetry constraint implies:
+        (i) for delta=1, no time reversal,
+            T(hopping2) = [V1(g)⊗U1(g)] @ T(hopping1) @ [V2(g)†⊗U1(g)†]
+        (ii) for delta=-1, there is time reversal
+            T(hopping2) = [V1(g)⊗~U1(g)] @ T*(hopping1) @ [V2(g)†⊗~U1(g)†]
+    Geometrically, this function checks if the displacement vector of hopping2
+    is the result of applying a magnetic space group spatial part operation plus a lattice shift to
+    the displacement vector of hopping1.
+
+    Mathematical Condition:
+    ----------------------
+    Given hopping1 vector: r1 = center1 - neighbor1
+    Given hopping2 vector: r2 = center2 - neighbor2
+
+    hopping2 is linearly related to hopping1 if there exists a space group
+    operation g = (R|t) and lattice shift n_vec = [n0, n1, n2] such that:
+        R @ r1 + t + n_vec·[a0,a1,a2] = r2
+    EDGE CASE (Self-Hopping / On-Site):
+    -----------------------------------
+    If dist1 = dist2 = 0 (hopping is from an atom to itself), the hopping vector is 0.
+    The condition simplifies to checking if the operation maps atom1 to atom2:
+        R @ pos_atom1 + t + n_vec·basis = pos_atom2
+
+    Args:
+        hopping1: First hopping object (reference hopping)
+        hopping2: Second hopping object (candidate symmetry equivalent)
+        magnetic_space_group_cart_spatial:
+        delta_vec: indicating time reversal, 1 for no time reversal, -1 for time reversal
+        lattice_basis: Primitive lattice basis vectors (3×3 array), each row is a basis vector
+        tolerance: Numerical tolerance for comparison (default: 1e-3)
+
+    Returns:
+        tuple: (is_linear, operation_idx, n_vec, delta)
+        - is_linear (bool): True if hopping2 is related to hopping1 via symmetry
+        - operation_idx (int or None): Index of the magnetic space group operation
+        - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2]
+        - delta, 1 for no time reversal, -1 for time reversal
+
+    """
+    # ==============================================================================
+    # STEP 1: Extract atoms and validate types
+    # ==============================================================================
+    # hopping1: to_atom1 (center) ← from_atom1 (neighbor)
+    to_atom1 = hopping1.to_atom
+    from_atom1 = hopping1.from_atom
+
+    # hopping2: to_atom2 (center) ← from_atom2 (neighbor)
+    to_atom2 = hopping2.to_atom
+    from_atom2 = hopping2.from_atom
+
+    to_atom1_position_name = to_atom1.position_name
+    from_atom1_position_name = from_atom1.position_name
+
+    to_atom2_position_name = to_atom2.position_name
+    from_atom2_position_name = from_atom2.position_name
+
+    dist1 = hopping1.distance
+    dist2 = hopping2.distance
+
+    # Check 1: Hopping distances must be identical (isometry)
+    if np.abs(dist1 - dist2) > tolerance:
+        return False, None, None,None
+    # Check 2: Atom wyckoff position must match for a valid symmetry operation
+    if to_atom1_position_name != to_atom2_position_name or from_atom1_position_name != from_atom2_position_name:
+        return False, None, None,None
+
+    # ==============================================================================
+    # STEP 2: Handle Edge Case (Self-Hopping / On-Site Terms)
+    # ==============================================================================
+    is_self_hopping = (dist1 < tolerance)
+    if is_self_hopping:
+        # For self-hopping, center and neighbor are the same atom
+        # We need to check if the operation maps atom1 to atom2.
+        # Equation: R @ pos_atom1 + t + n_vec·basis = pos_atom2
+        pos_atom1 = to_atom1.cart_coord
+        pos_atom2 = to_atom2.cart_coord
+        for op_idx in range(len(magnetic_space_group_cart_spatial)):
+            R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+            # Apply operation to atom1 position
+            transformed_pos = R @ pos_atom1 + t
+            # Calculate required shift to reach atom2
+            required_lattice_shift = pos_atom2 - transformed_pos
+            is_lattice, n_vec =is_lattice_vector(
+                required_lattice_shift,
+                lattice_basis,
+                tolerance
+            )
+            if is_lattice:
+                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+        # If loop finishes for self-hopping without match
+        return False, None, None,None
+
+    # ==============================================================================
+    # STEP 3: Standard Case (Inter-atomic Hopping)
+    # ==============================================================================
+    # Displacement vector for hopping1
+    # print("entering here")
+    for op_idx in range(len(magnetic_space_group_cart_spatial)):
+        # Extract rotation R and translation t from space group operation
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+        # Apply rotation and translation to to_atom1.cart_coord\
+        # transformed = R @ r1 + t
+        transformed_to_atom1_pos = R @ to_atom1.cart_coord + t
+        # Calculate required lattice shift
+        # We need: transformed_vec + n_vec·basis = hopping_vec2
+        # Therefore: n_vec·basis = hopping_vec2 - transformed_vec
+        required_lattice_shift = to_atom2.cart_coord - transformed_to_atom1_pos
+        # Check if required_lattice_shift is a lattice vector
+        is_lattice, n_vec = is_lattice_vector(
+            required_lattice_shift,
+            lattice_basis,
+            tolerance
+        )
+        if is_lattice:
+            # check if this operation maps to_atom1 to to_atom2, and maps from_atom1 to from_atom2
+            from_atoms_match = apply_full_transformation_and_check_position(from_atom1, from_atom2, R, t, lattice_basis,
+                                                                            n_vec,
+                                                                           tolerance)
+            if from_atoms_match:
+                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+            else:
+                continue
+
+    # ==============================================================================
+    # No linear relationship found
+    # ==============================================================================
+    return False, None, None,None
