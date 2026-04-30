@@ -1652,7 +1652,8 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
     Args:
         hopping1: First hopping object (reference hopping)
         hopping2: Second hopping object (candidate symmetry equivalent)
-        magnetic_space_group_cart_spatial:
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+                                           using cif origin (shape: num_ops × 3 × 4)
         delta_vec: indicating time reversal, 1 for no time reversal, -1 for time reversal
         lattice_basis: Primitive lattice basis vectors (3×3 array), each row is a basis vector
         tolerance: Numerical tolerance for comparison (default: 1e-3)
@@ -1740,7 +1741,7 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
             tolerance
         )
         if is_lattice:
-            # check if this operation maps to_atom1 to to_atom2, and maps from_atom1 to from_atom2
+            # check if this operation maps from_atom1 to from_atom2
             from_atoms_match = apply_full_transformation_and_check_position(from_atom1, from_atom2, R, t, lattice_basis,
                                                                             n_vec,
                                                                            tolerance)
@@ -1749,6 +1750,137 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
             else:
                 continue
 
+    # ==============================================================================
+    # No linear relationship found
+    # ==============================================================================
+    return False, None, None,None
+
+
+
+
+def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial,delta_vec,
+                            lattice_basis, tolerance=1e-3):
+    """
+     Check if hopping2 is the Hermitian conjugate of hopping1.
+    For tight-binding models, Hermiticity requires:
+        H† = H  =>  T(i ← j) = T(j ← i)†
+
+    This function checks if hopping2 corresponds to the reverse direction of hopping1
+    under some magnetic space group spatial part operation with lattice translation.
+
+
+    Mathematical Condition:
+    ----------------------
+    Given hopping1: center1 ← neighbor1
+    And hopping2: center2 ← neighbor2
+    hopping2 is Hermitian conjugate of hopping1 if there exists a magnetic space group
+    spatial part  operation g = (R|t) and lattice shift n_vec = [n0, n1, n2] such that:
+    1. The conjugate of hopping2 (neighbor2 ← center2) equals the transformed hopping1
+    2. Specifically: R @ (center1 - neighbor1) + t + n_vec·[a0,a1,a2] = neighbor2 - center2
+
+    This means the hopping vector transforms consistently under the symmetry operation.
+
+    Args:
+        hopping1: First hopping object (reference hopping)
+        hopping2: Second hopping object (candidate Hermitian conjugate)
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
+                                           using cif origin (shape: num_ops × 3 × 4)
+        delta_vec: indicating time reversal, 1 for no time reversal, -1 for time reversal
+        lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+                      expressed in Cartesian coordinates using cif origin
+        tolerance: Numerical tolerance for comparison (default: 1e-3)
+
+    Returns:
+        tuple: (is_hermitian, operation_idx, n_vec, delta)
+        - is_hermitian (bool): True if hopping2 is Hermitian conjugate of hopping1
+        - operation_idx (int or None): Index of the space group operation that
+                                        relates hopping1 to hopping2, or None if not Hermitian conjugate
+        - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2],
+                                   or None if not Hermitian conjugate
+        - delta, 1 for no time reversal, -1 for time reversal
+    Example:
+        For hBN with hopping1: N[0,0,0] ← B[0,0,0]
+        and hopping2: B[0,0,0] ← N[0,0,0]
+        These are Hermitian conjugates under identity operation with zero lattice shift.
+    """
+    # ==============================================================================
+    # STEP 1: Get atoms from both hoppings
+    # ==============================================================================
+    # hopping1: to_atom1 (center) ← from_atom1 (neighbor)
+    to_atom1 = hopping1.to_atom
+    from_atom1 = hopping1.from_atom
+    # hopping2: to_atom2 (center) ← from_atom2 (neighbor)
+    # For Hermiticity, we need the CONJUGATE (reverse direction)
+    # conjugate of hopping2: to_atom2c (becomes center) ← from_atom2c (becomes neighbor)
+    to_atom2c, from_atom2c = hopping2.conjugate()
+
+    to_atom1_position_name = to_atom1.position_name
+    from_atom1_position_name = from_atom1.position_name
+
+    to_atom2c_position_name = to_atom2c.position_name
+    from_atom2c_position_name = from_atom2c.position_name
+
+    dist1 = hopping1.distance
+    dist2 = hopping2.distance
+    if np.abs(dist1 - dist2) > tolerance:
+        return False, None, None,None
+    if to_atom1_position_name != to_atom2c_position_name or from_atom1_position_name != from_atom2c_position_name:
+        return False, None, None,None
+
+    # ==============================================================================
+    # STEP 2: Handle Edge Case (Self-Hopping / On-Site Terms)
+    # ==============================================================================
+    is_self_hopping = (dist1 < tolerance)
+    if is_self_hopping:
+        # # For self-hopping, center and neighbor are the same atom
+        ## We need to check if the operation maps atom1 to atom2
+        # Equation: R @ pos_atom1 + t + n_vec·basis = pos_atom2
+        pos_atom1 = to_atom1.cart_coord
+        pos_atom2c = to_atom2c.cart_coord
+        for op_idx in range(len(magnetic_space_group_cart_spatial)):
+            R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+            # Apply operation to atom1 position
+            transformed_pos = R @ pos_atom1 + t
+            # Calculate required shift to reach atom2
+            required_lattice_shift = pos_atom2c - transformed_pos
+            is_lattice, n_vec = is_lattice_vector(
+                required_lattice_shift,
+                lattice_basis,
+                tolerance
+            )
+            if is_lattice:
+                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+
+        return False, None, None
+    # ==============================================================================
+    # STEP 3: Standard Case (Inter-atomic Hopping)
+    # ==============================================================================
+    # Displacement vector for hopping1
+    for op_idx in range(len(magnetic_space_group_cart_spatial)):
+        # Extract rotation R and translation t from space group operation
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+        # Apply rotation and translation to to_atom1.cart_coord
+        # transformed = R @ r1 + t
+        transformed_to_atom1_pos = R @ to_atom1.cart_coord + t
+        # Calculate required lattice shift
+        # match to_atom1 with to_atom2c
+        required_lattice_shift = to_atom2c.cart_coord - transformed_to_atom1_pos
+        # Check if required_lattice_shift is a lattice vector
+        is_lattice, n_vec = is_lattice_vector(
+            required_lattice_shift,
+            lattice_basis,
+            tolerance
+        )
+        if is_lattice:
+            # check if this operation maps  from_atom1 to from_atom2c
+            from_atoms_match = apply_full_transformation_and_check_position(from_atom1, from_atom2c, R, t,
+                                                                            lattice_basis,
+                                                                            n_vec,
+                                                                            tolerance)
+            if  from_atoms_match:
+                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+            else:
+                continue
     # ==============================================================================
     # No linear relationship found
     # ==============================================================================
