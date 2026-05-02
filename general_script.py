@@ -1622,15 +1622,15 @@ def apply_full_transformation_and_check_position(atom1,atom2,R,t,lattice_basis,n
         return False
 
 
-def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,delta_vec,
+def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,
                             lattice_basis, tolerance=1e-3):
     """
     Check if hopping2 is related to hopping1 by a space group symmetry operation.
      For tight-binding models, a linear symmetry constraint implies:
         (i) for delta=1, no time reversal,
-            T(hopping2) = [V1(g)⊗U1(g)] @ T(hopping1) @ [V2(g)†⊗U1(g)†]
+            T(hopping2) = [V1(g)⊗U1(g)] @ T(hopping1) @ [V2(g)†⊗U2(g)†]
         (ii) for delta=-1, there is time reversal
-            T(hopping2) = [V1(g)⊗~U1(g)] @ T*(hopping1) @ [V2(g)†⊗~U1(g)†]
+            T(hopping2) = [V1(g)⊗~U1(g)] @ T*(hopping1) @ [V2(g)†⊗~U2(g)†]
     Geometrically, this function checks if the displacement vector of hopping2
     is the result of applying a magnetic space group spatial part operation plus a lattice shift to
     the displacement vector of hopping1.
@@ -1654,7 +1654,7 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
         hopping2: Second hopping object (candidate symmetry equivalent)
         magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
                                            using cif origin (shape: num_ops × 3 × 4)
-        delta_vec: indicating time reversal, 1 for no time reversal, -1 for time reversal
+
         lattice_basis: Primitive lattice basis vectors (3×3 array), each row is a basis vector
         tolerance: Numerical tolerance for comparison (default: 1e-3)
 
@@ -1663,7 +1663,6 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
         - is_linear (bool): True if hopping2 is related to hopping1 via symmetry
         - operation_idx (int or None): Index of the magnetic space group operation
         - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2]
-        - delta, 1 for no time reversal, -1 for time reversal
 
     """
     # ==============================================================================
@@ -1688,10 +1687,10 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
 
     # Check 1: Hopping distances must be identical (isometry)
     if np.abs(dist1 - dist2) > tolerance:
-        return False, None, None,None
+        return False, None, None
     # Check 2: Atom wyckoff position must match for a valid symmetry operation
     if to_atom1_position_name != to_atom2_position_name or from_atom1_position_name != from_atom2_position_name:
-        return False, None, None,None
+        return False, None, None
 
     # ==============================================================================
     # STEP 2: Handle Edge Case (Self-Hopping / On-Site Terms)
@@ -1715,9 +1714,9 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
                 tolerance
             )
             if is_lattice:
-                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+                return True, op_idx, n_vec.astype(int)
         # If loop finishes for self-hopping without match
-        return False, None, None,None
+        return False, None, None
 
     # ==============================================================================
     # STEP 3: Standard Case (Inter-atomic Hopping)
@@ -1746,19 +1745,19 @@ def check_hopping_linear(hopping1,hopping2, magnetic_space_group_cart_spatial,de
                                                                             n_vec,
                                                                            tolerance)
             if from_atoms_match:
-                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+                return True, op_idx, n_vec.astype(int)
             else:
                 continue
 
     # ==============================================================================
     # No linear relationship found
     # ==============================================================================
-    return False, None, None,None
+    return False, None, None
 
 
 
 
-def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial,delta_vec,
+def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial,
                             lattice_basis, tolerance=1e-3):
     """
      Check if hopping2 is the Hermitian conjugate of hopping1.
@@ -1785,7 +1784,7 @@ def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial
         hopping2: Second hopping object (candidate Hermitian conjugate)
         magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian coordinates
                                            using cif origin (shape: num_ops × 3 × 4)
-        delta_vec: indicating time reversal, 1 for no time reversal, -1 for time reversal
+
         lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
                       expressed in Cartesian coordinates using cif origin
         tolerance: Numerical tolerance for comparison (default: 1e-3)
@@ -1797,7 +1796,7 @@ def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial
                                         relates hopping1 to hopping2, or None if not Hermitian conjugate
         - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2],
                                    or None if not Hermitian conjugate
-        - delta, 1 for no time reversal, -1 for time reversal
+
     Example:
         For hBN with hopping1: N[0,0,0] ← B[0,0,0]
         and hopping2: B[0,0,0] ← N[0,0,0]
@@ -1823,9 +1822,9 @@ def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial
     dist1 = hopping1.distance
     dist2 = hopping2.distance
     if np.abs(dist1 - dist2) > tolerance:
-        return False, None, None,None
+        return False, None, None
     if to_atom1_position_name != to_atom2c_position_name or from_atom1_position_name != from_atom2c_position_name:
-        return False, None, None,None
+        return False, None, None
 
     # ==============================================================================
     # STEP 2: Handle Edge Case (Self-Hopping / On-Site Terms)
@@ -1849,7 +1848,7 @@ def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial
                 tolerance
             )
             if is_lattice:
-                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+                return True, op_idx, n_vec.astype(int)
 
         return False, None, None
     # ==============================================================================
@@ -1878,10 +1877,148 @@ def check_hopping_hermitian(hopping1,hopping2, magnetic_space_group_cart_spatial
                                                                             n_vec,
                                                                             tolerance)
             if  from_atoms_match:
-                return True, op_idx, n_vec.astype(int),delta_vec[op_idx]
+                return True, op_idx, n_vec.astype(int)
             else:
                 continue
     # ==============================================================================
     # No linear relationship found
     # ==============================================================================
-    return False, None, None,None
+    return False, None, None
+
+
+def add_to_root_linear(root1, root2, magnetic_space_group_cart_spatial,
+                       lattice_basis, type_linear, tolerance=1e-3):
+    """
+    Attempt to graft root2 onto root1 as a linear child if a symmetry relationship exists.
+    This function checks if root2's hopping can be generated from root1's hopping
+    by applying a magnetic space group spatial part operation (rotation + translation + lattice shift).
+    If a valid linear relationship is found, root2 is attached to root1 in the
+    constraint tree.
+
+    Physical Meaning:
+    ----------------
+    If successful, the hopping matrix T2 (of root2) is constrained by T1 (of root1):
+    (i) for delta=1, T2 = [V1(g)⊗U1(g)] @ T1 @ [V2(g)† ⊗ U2(g)†]
+    (ii) for delta=-1, T2=[V1(g)⊗~U1(g)] @ T1* @ [V2(g)†⊗~U2(g)†]
+
+    Args:
+        root1: First root vertex (parent candidate).
+        root2: Second root vertex (child candidate).
+        magnetic_space_group_cart_spatial:
+
+        lattice_basis: 3x3 array of lattice basis vectors (each row is a basis vector)
+        type_linear: String identifier for linear constraint type, value: "linear".
+        tolerance: Numerical tolerance for comparison (default: 1e-3).
+
+    Returns:
+        bool: True if root2 was successfully grafted as a linear child of root1.
+              False otherwise.
+    Side Effects:
+    -------------
+    If returns True:
+    - root1.children gains root2
+    - root2.parent becomes root1
+    - root2.is_root becomes False
+    - root2.type becomes type_linear
+    - root2.hopping.operation_idx and n_vec are updated to reflect the symmetry transform.
+    """
+    hopping1 = root1.hopping
+    hopping2 = root2.hopping
+    # check if hopping2 can be obtained linearly from hopping1
+    # This verifies: R @ r1 + t + n_vec·basis = r2
+    is_linear, op_idx, n_vec = check_hopping_linear(
+        hopping1, hopping2,
+        magnetic_space_group_cart_spatial,
+        lattice_basis, tolerance
+    )
+    if is_linear == True:
+        # ======================================================================
+        #Perform Grafting
+        # ======================================================================
+        # 1. Add root2 as root1's child (updates root1.children and root2.parent)
+        root1.add_child(root2)
+        # 2. Update root2 properties to reflect its dependent status
+        root2.type = type_linear
+        root2.is_root = False
+        # root2.parent is already set by add_child,
+        # 3. Store the symmetry parameters required to generate T2 from T1
+        root2.hopping.operation_idx = op_idx
+        root2.hopping.n_vec = deepcopy(n_vec)
+        return True
+    else:
+        return False
+
+
+
+def add_to_root_hermitian(root1, root2, magnetic_space_group_cart_spatial,
+                          lattice_basis, type_hermitian, tolerance=1e-3):
+    """
+    If root2's hopping is hermitian conjugate of root1's hopping,
+    add root2 as root1's child with hermitian constraint. This function checks if root2 is the Hermitian conjugate of root1 under
+    some magnetic space group spatial part operation. If so, it adds root2 as a child of root1 with
+    the specified hermitian type and updates root2's properties accordingly.
+    Args:
+        root1:  First root vertex (parent)
+        root2:  Second root vertex (candidate hermitian conjugate)
+        magnetic_space_group_cart_spatial:  List of magnetic space group spatial part matrices in Cartesian coordinates
+        lattice_basis: Primitive lattice basis vectors (3×3 array)
+        type_hermitian:  String identifier for hermitian constraint type (e.g., "hermitian")
+        tolerance: Numerical tolerance for comparison (default: 1e-3)
+
+    Returns:
+        bool: True if root2 was added as hermitian child of root1, False otherwise
+
+    Example:
+        For hBN:
+        root1: N[0,0,0] ← B[0,0,0]
+        root2: B[0,0,0] ← N[0,0,0]
+        add_to_root_hermitian(root1, root2, ..., "hermitian") will add root2
+        as hermitian child of root1 with type="hermitian"
+    """
+    hopping1 = root1.hopping
+    hopping2 = root2.hopping
+    # Check if hopping2 is hermitian conjugate of hopping1
+    is_hermitian, op_idx, n_vec = check_hopping_hermitian(
+        hopping1, hopping2, magnetic_space_group_cart_spatial,
+        lattice_basis, tolerance)
+    if is_hermitian == True:
+        # Add root2 as root1's child
+        root1.add_child(root2)
+        # Set root2 properties for hermitian conjugate relationship
+        root2.type = type_hermitian
+        root2.is_root = False
+        root2.hopping.operation_idx = op_idx
+        root2.hopping.n_vec = deepcopy(n_vec)
+        return True
+    else:
+        return False
+
+
+def convert_equivalence_classes_to_hoppings(equivalence_classes, center_atom,
+                                            magnetic_space_group_cart_spatial, identity_idx):
+    """
+    Convert all equivalence classes of neighbors into hopping objects.
+    Each equivalence class contains symmetry-equivalent neighbors at the same distance.
+    This function:
+    1. Sorts equivalence classes by distance (nearest neighbors first)
+    2. Converts each equivalence class into an equivalent hopping class
+
+    An equivalent hopping class contains all hoppings (center ← neighbor) that are
+    related by symmetry operations. All hoppings in one class have:
+    - Same hopping distance
+    - Same center and neighbor atom types
+    - Hopping matrices related by symmetry transformations
+
+    IMPORTANT: Returns deep copy for complete independence.
+    The hopping objects themselves don't contain tree structure - that comes later
+    when vertices are created with parent-child references.
+
+    Args:
+        equivalence_classes:
+        center_atom:
+        magnetic_space_group_cart_spatial:
+        identity_idx:
+
+    Returns:
+
+    """
