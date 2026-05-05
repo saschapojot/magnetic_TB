@@ -2428,6 +2428,188 @@ def tree_grafting_linear(roots_all,magnetic_space_group_cart_spatial,lattice_bas
 
     return roots_grafted_linear
 
+def grafting_to_existing_hermitian(roots_grafted_hermitian,root_to_be_grafted,magnetic_space_group_cart_spatial,lattice_basis,type_hermitian,tolerance=1e-3):
+    """
+    Attempt to graft a new tree onto an existing collection of trees, the tree's root is hermitian child
+
+    This function checks if `root_to_be_grafted` is the Hermitian conjugate of any root
+    already in the `roots_grafted_hermitian` collection. If a Hermitian relationship is found,
+    the new tree is grafted onto the matching root as a hermitian child.
+
+    Grafting Strategy:
+    -----------------
+    This function implements an "early exit" strategy:
+    - Iterate through existing Hermitian-grafted trees.
+    - Check each one for a Hermitian relationship with the new tree.
+    - On the first match, graft and immediately return True.
+    - If no matches are found after checking all, return False.
+
+    Use Case:
+    --------
+    This is called when imposing Hermiticity constraints on the hopping parameters.
+    As each new root is encountered, we check if it is the conjugate of a root
+    we have already processed.
+
+    Args:
+        roots_grafted_hermitian (list): List of root vertex objects representing
+                                        roots that have already been processed.
+                                        IMPORTANT: Modified in-place when grafting occurs
+                                        (tree structures grow, but list itself is unchanged).
+        root_to_be_grafted  (vertex):  New root vertex attempting to be grafted.
+                                        If grafting succeeds:
+                                     - Becomes a hermitian child of a root in roots_grafted_hermitian
+                                     - is_root changes from True to False
+                                     - type changes from None to type_hermitian
+                                     - Entire subtree moves with it
+                                     If grafting fails:
+                                     - Remains independent
+        magnetic_space_group_cart_spatial  (list): Magnetic  space group spatial part operations in Cartesian coordinates.
+        lattice_basis (np.ndarray): Primitive lattice basis vectors.
+        type_hermitian (str): String identifier for Hermitian constraint type ("hermitian").
+        tolerance  (float): Numerical tolerance for comparisons (default: 1e-3).
+
+    Returns:
+        bool: True if root_to_be_grafted was successfully grafted onto one of the
+              existing roots in roots_grafted_hermitian.
+              False if no Hermitian relationship found with any existing root.
+
+    Physical Meaning:
+    ----------------
+     If grafting succeeds with root1 ∈ roots_grafted_hermitian, the hopping matrix T
+    is constrained by:
+    (i)  for delta=1, no time reversal,
+         T(root_to_be_grafted) = [[V1(g)⊗U(g)] @ T(root1) @ [V2(g)†⊗U(g)†]]†
+    (ii) for delta=-1, there is time reversal
+            T(root_to_be_grafted)  = [[V1(g)⊗~U(g)] @ T(root1)* @ [V2(g)†⊗~U(g)†]]†
+
+    """
+    # Iterate through each root that has already been processed
+    for root1 in roots_grafted_hermitian:
+        # Attempt to graft the new root onto the existing root1 as a Hermitian child
+        # add_to_root_hermitian handles the check and the structural update if successful
+        success = add_to_root_hermitian(
+            root1=root1,
+            root2=root_to_be_grafted,
+            magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
+            lattice_basis=lattice_basis,
+            type_hermitian=type_hermitian,
+            tolerance=tolerance
+        )
+        if success == True:
+            # Early exit: We found a parent!
+            # The tree is now grafted, so we stop searching.
+            return True
+    # If we finish the loop without returning, no Hermitian relationship was found
+    return False
+
+
+def tree_grafting_hermitian(roots_all,magnetic_space_group_cart_spatial,lattice_basis,type_hermitian,tolerance=1e-3):
+    """
+    Perform Hermitian tree grafting on all constraint trees.
+    This function implements the symmetry constraint: Hermiticity (H† = H).
+    It iterates through all root vertices and attempts to graft each one onto existing
+    trees if a Hermitian conjugate relationship exists.
+
+    Algorithm:
+    ---------
+    1. Deep copy all roots to avoid modifying the input
+    2. Initialize roots_grafted_hermitian with the 0th root
+    3. For each remaining root:
+        a. Try to graft it onto any existing root in roots_grafted_hermitian
+        b. If grafting succeeds: the root becomes a Hermitian child (dependent)
+        c. If grafting fails: add the root to roots_grafted_hermitian
+    4. Return the final collection of independent roots
+
+    Tree Structure After Grafting:
+    -----------------------------
+    Before:
+        Root A (independent)          Root B (independent)
+        ├── Child A0 (linear)         ├── Child B0 (linear)
+        └── Child A1 (linear)         └── Child B1 (linear)
+
+    After (if B is Hermitian conjugate of A):
+        Root A
+        ├── Child A0 (linear)
+        ├── Child A1 (linear)
+        └── Root B (hermitian) ← Now a child of A!
+            ├── Child B0 (linear)
+            └── Child B1 (linear)
+    Physical Meaning:
+    ----------------
+    For tight-binding models, Hermiticity requires:
+        H† = H  =>  T(i ← j) = T(j ← i)†
+    If root B is grafted as Hermitian child of root A:
+    (i)  for delta=1, no time reversal,
+         T(B) = [[V1(g)⊗U(g)] @ T(A) @ [V2(g)†⊗U(g)†]]†
+    (ii) for delta=-1, there is time reversal
+         T(B)  = [[V1(g)⊗~U(g)] @ T(A)* @ [V2(g)†⊗~U(g)†]]†
+    Args:
+        roots_all (list): List of all root vertex objects from generate_all_trees_for_unit_cell.
+                          Each root represents an independent constraint tree built from
+                          space group symmetry around a center atom.
+        magnetic_space_group_cart_spatial (list of np.ndarray): magnetic space group spatial part operations in Cartesian
+                                                      coordinates using cif origin.
+                                                      Shape: num_ops × 3 × 4 matrices [R|t]
+        lattice_basis (np.ndarray): Primitive lattice basis vectors (3×3 array).
+                                    Each row is a basis vector in Cartesian coordinates
+                                    using cif origin.
+        type_hermitian (str): String identifier for Hermitian constraint type.
+                              value: "hermitian".
+                              This label is assigned to grafted hermitian roots.
+        tolerance  (float, optional): Numerical tolerance for coordinate and distance
+                                     comparisons. Default: 1e-3
+
+    Returns:
+        list: Collection of  root vertex objects after Hermitian grafting.
+              Each root in this list is a family of hopping matrices under linear or hermitian constraint
+        Structure:
+                    - Roots that were successfully grafted as Hermitian children are NOT in this list
+                    - Their subtrees are now attached to their parent roots
+                    The number of roots decreases: len(returned_list) ≤ len(roots_all)
+     Side Effects:
+        - Creates deep copy of roots_all (input is not modified)
+        - Modifies the copied tree structures in-place during grafting
+        - Trees grow as Hermitian children are added
+        - Some roots lose their root status (is_root: True → False)
+    Algorithm Complexity:
+        Time: O(n² × m) where:
+             n = len(roots_all)
+             m = number of space group operations
+        Space: O(n) for deep copy of all roots
+
+    Notes:
+        - Order matters: first root becomes basis for grafting
+        - "First match wins" strategy in grafting_to_existing_hermitian
+        - Deep copy ensures input roots_all remains unchanged
+        - Grafted roots maintain their entire subtree (children move with parent)
+    """
+    # ==============================================================================
+    # STEP 1: Initialize working variables
+    # ==============================================================================
+    # Get total number of roots to process
+    # Deep copy all roots to avoid modifying the input
+    # CRITICAL: This creates completely independent tree structures
+    # - Each root and its entire subtree (children) are copied
+    # - Parent-child references within each tree are preserved in the copy
+    # - But the copied trees are independent of the original roots_all
+    roots_all_num = len(roots_all)
+    roots_all_copy = deepcopy(roots_all)
+    roots_grafted_hermitian = [roots_all_copy[0]]
+    for j in range(1, roots_all_num):
+        root_to_be_grafted = roots_all_copy[j]
+        was_grafted = grafting_to_existing_hermitian(
+            roots_grafted_hermitian=roots_grafted_hermitian,
+            root_to_be_grafted=root_to_be_grafted,
+            magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
+            lattice_basis=lattice_basis,
+            type_hermitian=type_hermitian,
+            tolerance=tolerance
+        )
+        if was_grafted:
+            pass
+        else:
+            roots_grafted_hermitian.append(root_to_be_grafted)
+    return roots_grafted_hermitian
 
 
 
@@ -2435,10 +2617,39 @@ def tree_grafting_linear(roots_all,magnetic_space_group_cart_spatial,lattice_bas
 
 
 
+def get_hopping_distance(root):
+    """Calculate the distance for a root's hopping"""
+    hopping = root.hopping
+    return np.linalg.norm(hopping.from_atom.cart_coord - hopping.to_atom.cart_coord)
 
 
+def create_hopping_matrix(root, tree_idx):
+    """
+    Create a symbolic hopping matrix for a root's hopping
+    Args:
+        root:  vertex object containing the hopping
+        tree_idx:  tree number/index
 
+    Returns:
+        sympy.Matrix: Hopping matrix with symbolic elements T^{tree_idx}_{i,j}
 
+    """
+    hopping_root = root.hopping
+    # Get orbitals directly from atom objects
+    to_orbitals = hopping_root.to_atom.get_orbital_names()
+    from_orbitals = hopping_root.from_atom.get_orbital_names()
+    # Get dimensions
+    n_to = len(to_orbitals)
+    n_from = len(from_orbitals)
+    # Create symbolic matrix
+    T = sp.zeros(n_to, n_from)
+    # Fill with symbolic elements
+    for i, to_orb in enumerate(to_orbitals):
+        for j, from_orb in enumerate(from_orbitals):
+            symbol_name = f"T^{{{tree_idx}}}_{{{to_orb},{from_orb}}}"
+            T[i, j] = sp.Symbol(symbol_name)
+
+    return T
 
 
 
@@ -2501,4 +2712,33 @@ roots_grafted_linear=tree_grafting_linear(roots_from_eq_class,
                                           type_linear,tol)
 
 
-# print_all_trees(roots_grafted_linear)
+roots_grafted_hermitian=tree_grafting_hermitian(roots_grafted_linear,
+                                                magnetic_space_group_cart_spatial,
+                                                lattice_basis,
+                                                type_hermitian,tol
+                                                )
+
+all_roots_sorted = sorted(roots_grafted_hermitian, key=get_hopping_distance)
+print_all_trees(all_roots_sorted)
+
+
+#  Prepare the data package to plot
+data_package_2_plt = {
+    "roots": all_roots_sorted,
+    "config": parsed_config,
+    "unit_cell_atoms":unit_cell_atoms
+}
+
+#  Serialize (Pickle) and Encode (Base64)
+# We use Base64 to ensure the binary pickle data doesn't get corrupted
+# when passing through the text-based stdin.
+try:
+    pickled_data_2_plt = pickle.dumps(data_package_2_plt)
+    encoded_data_2_plt = base64.b64encode(pickled_data_2_plt).decode('utf-8')
+except Exception as e:
+    print(f"Error preparing data for visualization: {e}")
+
+
+# ind=1
+# T=create_hopping_matrix(all_roots_sorted[ind],ind)
+# sp.pprint(T)
