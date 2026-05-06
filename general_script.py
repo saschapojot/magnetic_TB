@@ -2651,20 +2651,201 @@ def create_hopping_matrix(root, tree_idx):
 
     return T
 
+def find_root_stabilizer(root,lattice_basis,magnetic_space_group_cart_spatial,tolerance=1e-3):
+    """
+    Find stabilizer operations for a hopping root
+    Args:
+        root: vertex object containing the seed hopping (root.hopping)
+        lattice_basis: 3x3 array of primitive lattice basis vectors
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial
+                                           part matrices [R|t] in Cartesian coords
+        tolerance:  Numerical tolerance for coordinate comparisons (default: 1e-3)
+
+    Returns: list of list, [[op_idx0, n_vec0],...]
+
+    """
+    to_atom = root.hopping.to_atom
+    from_atom = root.hopping.from_atom
+
+    to_atom_cart_coord = to_atom.cart_coord
+    from_atom_cart_coord = from_atom.cart_coord
+
+    # Get lattice basis vectors
+    a0, a1, a2 = lattice_basis
+    lattice_matrix = np.column_stack([a0, a1, a2])
+    root_stabilizer = []
+    for op_idx, group_mat in enumerate(magnetic_space_group_cart_spatial):
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+        # Apply symmetry operation to both atoms
+        to_atom_transformed = R @ to_atom_cart_coord + t
+        from_atom_transformed = R @ from_atom_cart_coord + t
+        # Compute difference vectors
+        diff_to = to_atom_transformed - to_atom_cart_coord
+        diff_from = from_atom_transformed - from_atom_cart_coord
+        # Check if both differences are the SAME lattice vector
+        diff = diff_to - diff_from
+        if np.linalg.norm(diff) < tolerance:
+            # Both atoms translated by same lattice vector
+            # Verify it's actually a lattice vector
+            n_vector = np.linalg.solve(lattice_matrix, diff_to)
+            n_rounded = np.round(n_vector)
+            if np.allclose(n_vector, n_rounded, atol=tolerance):
+                root_stabilizer.append([op_idx,n_rounded])
+            else:
+                continue
+    return root_stabilizer
 
 
 
 
+def find_root_swapper(root,lattice_basis,magnetic_space_group_cart_spatial,tolerance=1e-3):
+    """
+    Find magnetic space group spatial part operations that swap the two atoms in a hopping.
+    A swapper operation g = (R|t) satisfies:
+        R @ to_atom + t + n·basis = from_atom
+        R @ from_atom + t + n·basis = to_atom
+    where n = [n0, n1, n2] is the same lattice shift for both transformations.
+    This constraint applies when the hopping is between atoms of the same
+    Wyckoff position type. It leads to additional symmetry constraints on
+    the hopping matrix:
+    (i)  for delta=1, no time reversal,
+          T = [V(g)⊗U(g)] @ T† @ [V(g)†⊗U(g)†]
+    (ii) for delta=-1, there is time reversal
+         T  = [V(g)⊗~U(g)] @ T*† @ [V2(g)†⊗~U(g)†]
 
 
 
+    Args:
+        root: vertex object containing the hopping
+        lattice_basis: Primitive lattice basis vectors (3×3 array),
+                      each row is a basis vector
+        magnetic_space_group_cart_spatial: List of magnetic space group spatial part matrices in Cartesian
+                                coordinates (shape: num_ops × 3 × 4)
+        tolerance: Numerical tolerance for comparison (default: 1e-3)
 
 
+    Returns:
+         list of list: [[op_idx0, n_vec0],...], indices of magnetic space group spatial part operations that swap the two atoms, with n_vec
+              Empty list if atoms have different Wyckoff position types.
 
 
+    """
+    # swapping constraint requires that the two atoms have the same Wyckoff position
+    # Extract atoms from hopping
+    to_atom = root.hopping.to_atom
+    from_atom = root.hopping.from_atom
+    # Check if atoms have the same Wyckoff position type
+    # Swapping only makes sense for atoms of the same Wyckoff position type
+    if to_atom.position_name!=from_atom.position_name:
+        return []
+    # Get Cartesian coordinates
+    to_atom_cart_coord = to_atom.cart_coord
+    from_atom_cart_coord = from_atom.cart_coord
+    # Get lattice basis vectors
+    a0, a1, a2 = lattice_basis
+    lattice_matrix = np.column_stack([a0, a1, a2])
+    root_swapper = []
+    for op_idx, group_mat in enumerate(magnetic_space_group_cart_spatial):
+        R, t = get_rotation_translation(magnetic_space_group_cart_spatial, op_idx)
+        # Apply symmetry operation to both atoms
+        to_atom_transformed = R @ to_atom_cart_coord + t
+        from_atom_transformed = R @ from_atom_cart_coord + t
+
+        diff_from_to_transformed = from_atom_cart_coord - to_atom_transformed
+        diff_to_from_transformed = to_atom_cart_coord - from_atom_transformed
+
+        diff_vec = diff_from_to_transformed - diff_to_from_transformed
+        if np.linalg.norm(diff_vec)<tolerance:
+            n_vector = np.linalg.solve(lattice_matrix,diff_from_to_transformed)
+            n_rounded = np.round(n_vector)
+            if np.allclose(n_vector, n_rounded, atol=tolerance):
+                root_swapper.append([op_idx,n_rounded])
+            else:
+                continue
+    return root_swapper
+
+def compute_U_tilde(U):
+    """
+    Computes the time-reversed spinor representation matrix.
+    Args:
+        U: a spinor representation matrix (2x2 numpy array)
+    Returns: -i*sigma_y@U*
+
+    """
+    # Define the original Pauli-y matrix: sigma_y = [[0, -i], [i, 0]]
+    sigma_y = np.array([
+        [0, -1j],
+        [1j, 0]
+    ], dtype=complex)
+    # Compute the complex conjugate of U
+    U_star = np.conj(U)
+    # Perform the matrix multiplication: -i * sigma_y @ U*
+    U_tilde = -1j * sigma_y @ U_star
+    return U_tilde
+
+def compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec,tolerance=1e-9):
+    """
+     Computes the list of spinor representation matrices, applying time reversal
+     indicated by delta_vec.
+    Args:
+        spinor_mat_representation: List of spinor representation matrices U(g).
+        delta_vec: Array of 1 or -1 indicating the presence of time reversal.
+                   1 means no time reversal, -1 means time reversal.
+        tolerance: Numerical tolerance for floating-point comparison.
+
+    Returns:  A list of matrices where each element is U if delta=1,
+              or U_tilde if delta=-1.
+
+    """
+    U_vec_transformed = []
+    # Iterate through each operation's spinor matrix and its delta value
+    for U, delta in zip(spinor_mat_representation, delta_vec):
+        if np.isclose(delta, 1.0, atol=tolerance):
+            # No time reversal, keep the original U
+            U_vec_transformed.append(deepcopy(U))
+        elif np.isclose(delta, -1.0, atol=tolerance):
+            # Time reversal is present, compute U_tilde
+            U_vec_transformed.append(compute_U_tilde(U))
+        else:
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+
+    return U_vec_transformed
 
 
+def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+    """
+    Generate the symbolic algebraic constraints imposed by stabilizer operations
+    on the independent hopping matrix of a root vertex.
 
+    Args:
+        root:  vertex object containing the seed hopping.
+        tree_idx:  Integer index of the tree (used for naming symbolic variables).
+        lattice_basis: 3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial:  List of spatial part matrices [R|t].
+        U_vec_transformed: List of transformed spinor representation matrices U(g) depending on delta
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance   for floating-point comparison.
+
+    Returns:
+
+    """
+    # Create hopping matrix
+    T = create_hopping_matrix(root, tree_idx)
+    root.hopping.T = deepcopy(T)
+    # Get atom information
+    root_to_atom = root.hopping.to_atom
+    root_from_atom = root.hopping.from_atom
+    # Get stabilizer operations
+    root_stabilizer = list(find_root_stabilizer(root, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
+    # Row-major vectorization of the original T matrix
+    T_vec = T.reshape(T.rows * T.cols, 1)
+    for stab_ind,op_idx_n_vec in  enumerate(root_stabilizer):
+        op_idx,n_vec=op_idx_n_vec
+        delta=delta_vec[op_idx]
+        # Get representation matrices directly from atoms
+        V_to = root_to_atom.get_sympy_representation_matrix(op_idx)
+        V_from = root_from_atom.get_sympy_representation_matrix(op_idx)
+        spinor_mat=U_vec_transformed[op_idx]
 
 
 
@@ -2742,3 +2923,9 @@ except Exception as e:
 # ind=1
 # T=create_hopping_matrix(all_roots_sorted[ind],ind)
 # sp.pprint(T)
+U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec)
+# for i, U in enumerate(U_vec_transformed):
+#     print(f"i={i}, U={U}")
+
+ind=1
+get_stabilizer_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
