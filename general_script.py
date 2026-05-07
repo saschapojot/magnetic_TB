@@ -8,6 +8,7 @@ from pathlib import Path
 import sympy as sp
 import pickle
 import base64
+import scipy.linalg
 
 from name_conventions import orbital_map, processed_input_pkl_file_name, type_linear, type_hermitian, H_latex_file_name, \
     H_html_file_name, H_pkl_file_name, hopping_parameters_template_file_name,representations_all_file_name
@@ -2625,7 +2626,7 @@ def get_hopping_distance(root):
 
 def create_hopping_matrix(root, tree_idx):
     """
-    Create a symbolic hopping matrix for a root's hopping
+     Create a symbolic hopping matrix for a root's hopping, including spin.
     Args:
         root:  vertex object containing the hopping
         tree_idx:  tree number/index
@@ -2638,18 +2639,25 @@ def create_hopping_matrix(root, tree_idx):
     # Get orbitals directly from atom objects
     to_orbitals = hopping_root.to_atom.get_orbital_names()
     from_orbitals = hopping_root.from_atom.get_orbital_names()
-    # Get dimensions
-    n_to = len(to_orbitals)
-    n_from = len(from_orbitals)
+    # Get dimensions (multiply by 2 for spin up/down)
+    n_to = len(to_orbitals) * 2
+    n_from = len(from_orbitals) * 2
     # Create symbolic matrix
     T = sp.zeros(n_to, n_from)
-    # Fill with symbolic elements
+    spins = ['up', 'down']
+    # Fill with symbolic elements matching the Kronecker product order
     for i, to_orb in enumerate(to_orbitals):
-        for j, from_orb in enumerate(from_orbitals):
-            symbol_name = f"T^{{{tree_idx}}}_{{{to_orb},{from_orb}}}"
-            T[i, j] = sp.Symbol(symbol_name)
+        for si, s_to in enumerate(spins):
+            row_idx = i * 2 + si  # Matches np.kron(V_to, spinor_mat)
 
+            for j, from_orb in enumerate(from_orbitals):
+                for sj, s_from in enumerate(spins):
+                    col_idx = j * 2 + sj  # Matches np.kron(V_from, spinor_mat)
+
+                    symbol_name = f"T^{{{tree_idx}}}_{{{to_orb}_{s_to},{from_orb}_{s_from}}}"
+                    T[row_idx, col_idx] = sp.Symbol(symbol_name)
     return T
+
 
 def find_root_stabilizer(root,lattice_basis,magnetic_space_group_cart_spatial,tolerance=1e-3):
     """
@@ -2839,15 +2847,127 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
     root_stabilizer = list(find_root_stabilizer(root, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
     # Row-major vectorization of the original T matrix
     T_vec = T.reshape(T.rows * T.cols, 1)
+    T_vec_left=deepcopy(T_vec)
+    stab_constraints_all = []
     for stab_ind,op_idx_n_vec in  enumerate(root_stabilizer):
         op_idx,n_vec=op_idx_n_vec
         delta=delta_vec[op_idx]
         # Get representation matrices directly from atoms
-        V_to = root_to_atom.get_sympy_representation_matrix(op_idx)
-        V_from = root_from_atom.get_sympy_representation_matrix(op_idx)
+        V_to = root_to_atom.get_numpy_representation_matrix(op_idx)
+        V_from = root_from_atom.get_numpy_representation_matrix(op_idx)
         spinor_mat=U_vec_transformed[op_idx]
+        action_mat_left=np.kron(V_to, spinor_mat)
+        action_mat_right=np.kron(V_from.conj().T,spinor_mat.conj().T)
+        action_on_vectorized_T=np.kron(action_mat_left,action_mat_right.T)
 
+        if np.isclose(delta,1,atol=1e-9):
+            #if delta =1, no time reversal
+            T_vec_right=deepcopy(T_vec)
+            stab_constraints_all.append({
+                'op_idx': op_idx,
+                "delta":delta,
+                "action_on_vectorized_T": action_on_vectorized_T,
+                'T_vec_left':deepcopy(T_vec_left),
+                "T_vec_right": deepcopy(T_vec_right)
+            })
+        elif np.isclose(delta,-1,atol=1e-9):
+            # if delta =1, there is  time reversal
+            T_vec_right = deepcopy(T_vec.conjugate())
+            stab_constraints_all.append({
+                'op_idx': op_idx,
+                "delta": delta,
+                "action_on_vectorized_T": action_on_vectorized_T,
+                'T_vec_left': deepcopy(T_vec_left),
+                "T_vec_right": deepcopy(T_vec_right)
+            })
 
+    return {
+        'T': T,
+        'stab_constraints_all': stab_constraints_all,
+    }
+
+def get_rref_numerical(matrix, tolerance=1e-9):
+    """
+    Computes the Reduced Row Echelon Form (RREF) of a matrix numerically.
+    Uses scipy.linalg.lu for fast Fortran-backed Gaussian elimination (REF),
+    followed by back-substitution to achieve RREF.
+    """
+    P, L, U = scipy.linalg.lu(matrix)
+
+    rows, cols = U.shape
+    pivot_cols = []
+
+    for r in range(rows):
+        non_zeros = np.where(np.abs(U[r, :]) > tolerance)[0]
+        if len(non_zeros) == 0:
+            continue
+
+        pivot_col = non_zeros[0]
+        pivot_cols.append(pivot_col)
+
+        U[r, :] = U[r, :] / U[r, pivot_col]
+
+        for i in range(r):
+            factor = U[i, pivot_col]
+            if np.abs(factor) > tolerance:
+                U[i, :] -= factor * U[r, :]
+
+    U[np.abs(U) < tolerance] = 0.0
+
+    return U, pivot_cols
+
+def stabilizer_delta_1_get_dependent_expressions(one_stab_constraint,tolerance=1e-9):
+    """
+    Solves the stabilizer constraint M @ T_vec = T_vec (for delta=1) and
+    returns a dictionary mapping dependent SymPy variables to their expressions
+    in terms of free variables.
+    Args:
+        one_stab_constraint: one_stab_constraint Dictionary containing the constraint data.
+        tolerance: Numerical tolerance for zeroing out floating point noise.
+
+    Returns:
+
+    """
+    delta=one_stab_constraint["delta"]
+    if not np.isclose(delta,1,atol=1e-9):
+        raise ValueError(f"Expected delta=1 for this solver, but got delta={delta}. "
+                         f"This function only handles stabilizer constraints without time reversal.")
+
+    action_on_vectorized_T=one_stab_constraint["action_on_vectorized_T"]
+    T_vec = one_stab_constraint["T_vec_left"]
+    #T_vec_right is equal to T_vec_left
+    # 1. Set up the equation: (M - I) @ T_vec = 0
+    dim = action_on_vectorized_T.shape[0]
+    identity_matrix = np.eye(dim, dtype=complex)
+    A = action_on_vectorized_T - identity_matrix
+    # 2. Get the Reduced Row Echelon Form (RREF) of A
+    U_rref, pivot_cols = get_rref_numerical(A, tolerance=tolerance)
+    dependent_expressions = {}
+
+    # 3. Extract the equations from the RREF matrix
+    for r, pivot_col in enumerate(pivot_cols):
+        # The pivot variable is our dependent variable
+        dependent_var = T_vec[pivot_col]  # Access the SymPy symbol from the column vector
+
+        # The row equation is: 1.0 * dependent_var + sum(U_rref[r, j] * T_vec[j]) = 0
+        # Therefore: dependent_var = - sum(U_rref[r, j] * T_vec[j])
+        expr = 0
+
+        # We only need to look at columns AFTER the pivot column
+        for j in range(pivot_col + 1, dim):
+            coeff = U_rref[r, j]
+            if np.abs(coeff) > tolerance:
+                # Round numerical coefficients slightly to clean up SymPy output
+                # Separate real and imaginary parts for cleaner symbolic expressions
+                real_part = np.round(np.real(coeff), decimals=int(-np.log10(tolerance)))
+                imag_part = np.round(np.imag(coeff), decimals=int(-np.log10(tolerance)))
+                clean_coeff = real_part + 1j * imag_part
+
+                expr -= clean_coeff * T_vec[j]
+
+        dependent_expressions[dependent_var] = expr
+
+    return dependent_expressions
 
 
 
@@ -2926,6 +3046,17 @@ except Exception as e:
 U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec)
 # for i, U in enumerate(U_vec_transformed):
 #     print(f"i={i}, U={U}")
+ind = 6
+rst=get_stabilizer_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
 
-ind=1
-get_stabilizer_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+# sp.pprint(rst["stab_constraints_all"][0]["T_vec_left"][0] )
+dependent_expressions=stabilizer_delta_1_get_dependent_expressions(rst["stab_constraints_all"][1],1e-9)
+if not dependent_expressions:
+    print("No dependent expressions found (all variables are free).")
+else:
+    for dependent_var, expression in dependent_expressions.items():
+        # Create a symbolic equation: dependent_var = expression
+        equation = sp.Eq(dependent_var, expression)
+        # Pretty-print the equation
+        sp.pprint(equation)
+        print("-" * 40)

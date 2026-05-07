@@ -178,17 +178,18 @@ class atomIndex:
 
 
 
-    def get_sympy_representation_matrix(self, operation_idx):
+    def get_numpy_representation_matrix(self, operation_idx):
         """
-        Get the orbital representation matrix as a sympy Matrix
+        Get the orbital representation matrix as a numpy Matrix
 
         Args:
             operation_idx: index of the space group operation
 
         Returns:
-            sympy.Matrix: representation matrix for this atom's orbitals
+            np array: representation matrix for this atom's orbitals
         """
-        return sp.Matrix(self.get_representation_matrix(operation_idx))
+        return self.get_representation_matrix(operation_idx)
+        # return sp.Matrix(self.get_representation_matrix(operation_idx))
 
 
     def __str__(self):
