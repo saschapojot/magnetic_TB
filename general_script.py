@@ -2880,6 +2880,9 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
                 'T_vec_left': deepcopy(T_vec_left),
                 "T_vec_right": deepcopy(T_vec_right)
             })
+        else:
+            # Raise an error if delta is neither 1 nor -1
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
 
     return {
         'T': T,
@@ -2916,13 +2919,13 @@ def get_rref_numerical(matrix, tolerance=1e-9):
 
     return U, pivot_cols
 
-def stabilizer_delta_1_get_dependent_expressions(one_stab_constraint,tolerance=1e-9):
+def stabilizer_delta_1_get_dependent_expressions(one_stab_constraint,tolerance=1e-3):
     """
-    Solves the stabilizer constraint M @ T_vec = T_vec (for delta=1) and
+    Solves the stabilizer constraint T_vec=M @ T_vec (for delta=1) and
     returns a dictionary mapping dependent SymPy variables to their expressions
     in terms of free variables.
     Args:
-        one_stab_constraint: one_stab_constraint Dictionary containing the constraint data.
+        one_stab_constraint: Dictionary containing the constraint data.
         tolerance: Numerical tolerance for zeroing out floating point noise.
 
     Returns:
@@ -2970,36 +2973,148 @@ def stabilizer_delta_1_get_dependent_expressions(one_stab_constraint,tolerance=1
     return dependent_expressions
 
 
+def split_complex_symbols(T_matrix):
+    """
+    Replace each complex symbol T_ij with T_ij_re + I*T_ij_im
+
+    Args:
+        T_matrix: sympy.Matrix with complex symbols
+
+    Returns:
+        T_split: Matrix with split real/imaginary symbols
+        symbol_map: Dict mapping original → (real, imag) symbols
+    """
+    symbol_map = {}
+    T_split = T_matrix.copy()
+
+    for symbol in T_matrix.free_symbols:
+        # Create real and imaginary parts
+        symbol_str = str(symbol)
+        real_symbol = sp.Symbol(f"re_{symbol_str}", real=True)
+        imag_symbol = sp.Symbol(f"im_{symbol_str}", real=True)
+
+        # Replace in matrix
+        T_split = T_split.subs(symbol, real_symbol + sp.I * imag_symbol)
+        # sp.pprint(real_symbol + sp.I * imag_symbol)
+
+        # Store mapping
+        symbol_map[symbol] = real_symbol+sp.I*imag_symbol
+
+    return T_split, symbol_map
+
+def stabilizer_delta_minus_1_get_dependent_expressions(one_stab_constraint,tolerance=1e-3):
+    """
+    Solves the stabilizer constraint T_vec = M @ T_vec* (for delta=-1) and
+    returns a dictionary mapping dependent SymPy variables to their expressions
+    in terms of free variables.
+     For T_vec = X + iY and M = M_re + i M_im, the equation T = M @ T* becomes:
+     X + iY = (M_re + i M_im) @ (X - iY)
+           = (M_re @ X + M_im @ Y) + i(M_im @ X - M_re @ Y)
+     Separating real and imaginary parts yields a 2N x 2N real linear system:
+     [ M_re - I    M_im    ] [ X ] = [ 0 ]
+     [ M_im      -M_re - I ] [ Y ]   [ 0 ]
+    Args:
+        one_stab_constraint: Dictionary containing the constraint data.
+        tolerance: Numerical tolerance for zeroing out floating point noise.
+
+    Returns:
+
+    """
+    delta = one_stab_constraint["delta"]
+    if not np.isclose(delta, -1, atol=1e-9):
+        raise ValueError(f"Expected delta=-1 for this solver, but got delta={delta}. "
+                         f"This function only handles stabilizer constraints with time reversal.")
+    M = one_stab_constraint["action_on_vectorized_T"]
+    T_vec_left=one_stab_constraint["T_vec_left"]
+    # Split the complex symbols into real and imaginary parts
+    T_vec_left_split,symbol_map=split_complex_symbols(T_vec_left)
+    # sp.pprint(symbol_map)
+    dim = M.shape[0]
+    M_re = np.real(M)
+    M_im = np.imag(M)
+    I = np.eye(dim)
+    # Construct the 2N x 2N real block matrix
+    A_top = np.hstack([M_re - I, M_im])
+    A_bottom = np.hstack([M_im, -M_re - I])
+    A = np.vstack([A_top, A_bottom])
+    # Create the corresponding 2N-dimensional vector of real SymPy variables
+    # X_vars will hold the real parts, Y_vars the imaginary parts
+    X_vars = []
+    Y_vars = []
+    for i in range(dim):
+        orig_sym = T_vec_left[i]
+        # Extract the real and imaginary symbols created by split_complex_symbols
+        # symbol_map[orig_sym] is (re_sym + I * im_sym)
+        complex_expr = symbol_map[orig_sym]
+        re_part, im_part = complex_expr.as_real_imag()
+        X_vars.append(re_part)
+        Y_vars.append(im_part)
+    vars_vec = X_vars + Y_vars
+    # Get the Reduced Row Echelon Form (RREF) of the real block matrix A
+    U_rref, pivot_cols = get_rref_numerical(A, tolerance=tolerance)
+    dependent_expressions = {}
+    # Extract the equations from the RREF matrix
+    for r, pivot_col in enumerate(pivot_cols):
+        dependent_var = vars_vec[pivot_col]
+        expr = 0
+        # Look at columns AFTER the pivot column
+        for j in range(pivot_col + 1, 2 * dim):
+            coeff = U_rref[r, j]
+            if np.abs(coeff) > tolerance:
+                # Clean up numerical noise
+                clean_coeff = np.round(coeff, decimals=int(-np.log10(tolerance)))
+                expr -= clean_coeff * vars_vec[j]
+
+        dependent_expressions[dependent_var] = expr
+    return dependent_expressions
 
 
 
+def reconstruct_hopping_matrix(T_original, dependent_expressions):
+    """Reconstruct hopping matrix with only free variables"""
+    T_reconstructed = T_original.copy()
 
+    for dep_var, expr in dependent_expressions.items():
+        T_reconstructed = T_reconstructed.subs(dep_var, expr)
+    return T_reconstructed
 
+def analyze_stabilizer_constraints(root, tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec, tolerance=1e-3):
+    """
+    perform constraint analysis using stabilizer constraints
+    Args:
+        root:
+        tree_idx:
+        lattice_basis:
+        magnetic_space_group_cart_spatial:
+        tolerance:
 
+    Returns:
 
+    """
+    # Get stabilizer constraints
+    root_stab_result = get_stabilizer_constraints(root,
+                                                  tree_idx,
+                                                  lattice_basis,
+                                                  magnetic_space_group_cart_spatial,
+                                                  U_vec_transformed,
+                                                  delta_vec,
+                                                  tolerance)
+    stab_constraints_all=root_stab_result["stab_constraints_all"]
+    all_dependent_expressions = {}
 
+    for one_stab_constraint in stab_constraints_all:
+        delta = one_stab_constraint["delta"]
+        if np.isclose(delta, 1, atol=1e-9):
+            dependent_expressions = stabilizer_delta_1_get_dependent_expressions(one_stab_constraint, tolerance)
+            all_dependent_expressions.update(dependent_expressions)
+        elif np.isclose(delta, -1, atol=1e-9):
+            dependent_expressions = stabilizer_delta_minus_1_get_dependent_expressions(one_stab_constraint, tolerance)
+            all_dependent_expressions.update(dependent_expressions)
+            # sp.pprint(dependent_expressions)
+        else:
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return all_dependent_expressions
 
 
 
@@ -3047,16 +3162,5 @@ U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_repres
 # for i, U in enumerate(U_vec_transformed):
 #     print(f"i={i}, U={U}")
 ind = 6
-rst=get_stabilizer_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+analyze_stabilizer_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
 
-# sp.pprint(rst["stab_constraints_all"][0]["T_vec_left"][0] )
-dependent_expressions=stabilizer_delta_1_get_dependent_expressions(rst["stab_constraints_all"][1],1e-9)
-if not dependent_expressions:
-    print("No dependent expressions found (all variables are free).")
-else:
-    for dependent_var, expression in dependent_expressions.items():
-        # Create a symbolic equation: dependent_var = expression
-        equation = sp.Eq(dependent_var, expression)
-        # Pretty-print the equation
-        sp.pprint(equation)
-        print("-" * 40)
