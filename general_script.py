@@ -2852,6 +2852,7 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
     for stab_ind,op_idx_n_vec in  enumerate(root_stabilizer):
         op_idx,n_vec=op_idx_n_vec
         delta=delta_vec[op_idx]
+        assert np.isclose(delta, 1, atol=1e-9) or np.isclose(delta, -1, atol=1e-9)
         # Get representation matrices directly from atoms
         V_to = root_to_atom.get_numpy_representation_matrix(op_idx)
         V_from = root_from_atom.get_numpy_representation_matrix(op_idx)
@@ -2860,34 +2861,80 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
         action_mat_right=np.kron(V_from.conj().T,spinor_mat.conj().T)
         action_on_vectorized_T=np.kron(action_mat_left,action_mat_right.T)
 
-        if np.isclose(delta,1,atol=1e-9):
-            #if delta =1, no time reversal
-            T_vec_right=deepcopy(T_vec)
-            stab_constraints_all.append({
-                'op_idx': op_idx,
-                "delta":delta,
-                "action_on_vectorized_T": action_on_vectorized_T,
-                'T_vec_left':deepcopy(T_vec_left),
-                "T_vec_right": deepcopy(T_vec_right)
-            })
-        elif np.isclose(delta,-1,atol=1e-9):
-            # if delta =1, there is  time reversal
-            T_vec_right = deepcopy(T_vec.conjugate())
-            stab_constraints_all.append({
-                'op_idx': op_idx,
-                "delta": delta,
-                "action_on_vectorized_T": action_on_vectorized_T,
-                'T_vec_left': deepcopy(T_vec_left),
-                "T_vec_right": deepcopy(T_vec_right)
-            })
-        else:
-            # Raise an error if delta is neither 1 nor -1
-            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+        stab_constraints_all.append({
+            'op_idx': op_idx,
+            "delta": delta,
+            "action_on_vectorized_T": action_on_vectorized_T,
+            'T_vec_left': deepcopy(T_vec_left),
+            'kind': "stabilizer"
+
+        })
+
+
 
     return {
         'T': T,
         'stab_constraints_all': stab_constraints_all,
     }
+def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+    """
+    Generate the symbolic algebraic constraints imposed by swapping operations
+    on the independent hopping matrix of a root vertex.
+    Args:
+        root:  vertex object containing the seed hopping.
+        tree_idx: Integer index of the tree (used for naming symbolic variables).
+        lattice_basis:  3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
+        U_vec_transformed: List of transformed spinor representation matrices U(g) depending on delta
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance   for floating-point comparison.
+
+    Returns:
+
+    """
+    # Create hopping matrix
+    T = create_hopping_matrix(root, tree_idx)
+    root.hopping.T = deepcopy(T)
+    # Get atom information
+    root_to_atom = root.hopping.to_atom
+    root_from_atom = root.hopping.from_atom
+    if  root_to_atom.position_name!=root_from_atom.position_name:
+        return {}
+    # Get stabilizer operations
+    root_swapper = list(find_root_swapper(root, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
+    # Row-major vectorization of the original T matrix
+    T_vec = T.reshape(T.rows * T.cols, 1)
+    T_vec_left = deepcopy(T_vec)
+    swapping_constraints_all=[]
+    for swap_ind, op_idx_n_vec in  enumerate(root_swapper):
+        op_idx,n_vec=op_idx_n_vec
+        delta = delta_vec[op_idx]
+        assert np.isclose(delta, 1, atol=1e-9) or np.isclose(delta, -1, atol=1e-9)
+        # Get representation matrices directly from atoms
+        V_to = root_to_atom.get_numpy_representation_matrix(op_idx)
+        V_from = root_from_atom.get_numpy_representation_matrix(op_idx)
+        spinor_mat = U_vec_transformed[op_idx]
+        action_mat_left = np.kron(V_to, spinor_mat)
+        action_mat_right = np.kron(V_from.conj().T, spinor_mat.conj().T)
+        action_on_vectorized_T = np.kron(action_mat_left, action_mat_right.T)
+        swapping_constraints_all.append({
+            'op_idx': op_idx,
+            "delta": delta,
+            "action_on_vectorized_T": action_on_vectorized_T,
+            'T_vec_left': deepcopy(T_vec_left),
+            'kind': "swapper"
+        })
+
+    return {
+        'T': T,
+        'swapping_constraints_all':swapping_constraints_all
+    }
+
+
+
+
+
+
 
 def get_rref_numerical(matrix, tolerance=1e-9):
     """
@@ -2949,7 +2996,7 @@ def split_complex_symbols(T_matrix):
 
     return T_split, symbol_map
 
-def get_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
     """
     obtaining all equations for stabilizer constraints, split symbols into real and imaginary parts
     Args:
@@ -2962,7 +3009,7 @@ def get_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_s
         tolerance: Numerical tolerance.
 
     Returns:
-        Dictionary containing the symbolic matrices, the symbol map, and the numerical constraint matrix M_total.
+        Dictionary containing the symbolic matrices, the symbol map, and the numerical constraint matrix M_total for stabilizer constraint
 
     """
     # Get the stabilizer constraints and the action matrices
@@ -3035,9 +3082,100 @@ def get_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_s
         'T_vec_imag': T_vec_imag,
         'X_vec': X_vec,
         'symbol_map': symbol_map,
-        'constraint_total_stabilizer': M_total,
+        'stabilizer_constraint_total': M_total,
         'N': N
     }
+
+def get_swapping_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+    """
+    obtaining all equations for swapping constraints, split symbols into real and imaginary parts
+    Args:
+        root:  vertex object containing the seed hopping.
+        tree_idx: Integer index of the tree.
+        lattice_basis: 3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
+        U_vec_transformed: List of transformed spinor representation matrices U(g).
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance.
+
+    Returns:
+Dictionary containing the symbolic matrices, the symbol map, and the numerical constraint matrix M_total for swapping constraint
+    """
+    # Get the swapping constraints and the action matrices
+    constraints_data=get_swapping_constraints(root=root,
+                                             tree_idx=tree_idx,
+                                             lattice_basis=lattice_basis,
+                                             magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
+                                             U_vec_transformed=U_vec_transformed,
+                                             delta_vec=delta_vec,
+                                             tolerance=tolerance)
+    if len(constraints_data) == 0:
+        return {}
+
+    T = constraints_data['T']
+    swapping_constraints_all=constraints_data["swapping_constraints_all"]
+    # Vectorize T into a column vector
+    N = T.rows * T.cols
+    T_vec = T.reshape(N, 1)
+    T_vec_split, symbol_map = split_complex_symbols(T_vec)
+    # Extract real and imaginary symbolic vectors to form the full unknown vector X
+    T_vec_real = sp.zeros(N, 1)
+    T_vec_imag = sp.zeros(N, 1)
+    for i in range(N):
+        sym = T_vec[i, 0]
+        split_expr = symbol_map[sym]
+        # split_expr is of the form: re_sym + I * im_sym
+        re_part, im_part = split_expr.as_real_imag()
+        T_vec_real[i, 0] = re_part
+        T_vec_imag[i, 0] = im_part
+    # The full unknown vector X = [Re(T_vec); Im(T_vec)]
+    X_vec = sp.Matrix.vstack(T_vec_real, T_vec_imag)
+    # Build the numerical constraint matrix M_total
+    I = np.eye(N)
+    K = np.zeros((N, N))
+    # Vectorized construction of K
+    dim = T.rows
+    row_idx = np.arange(N)
+    col_idx = (row_idx % dim) * dim + (row_idx // dim)
+    K[row_idx, col_idx] = 1.0
+    constraint_matrices = []
+    for constraint in swapping_constraints_all:
+        delta = constraint['delta']
+        action_mat = constraint['action_on_vectorized_T']
+        # Apply the commutation matrix K to account for the transpose in T^dagger or T^T
+        C = action_mat @ K
+        C_R = np.real(C)
+        C_I = np.imag(C)
+        if np.isclose(delta, 1.0, atol=1e-9):
+            top_row = np.hstack([C_R - I, C_I])
+            bottom_row = np.hstack([C_I, -(C_R + I)])
+            M = np.vstack([top_row, bottom_row])
+        elif np.isclose(delta, -1.0, atol=1e-9):
+            top_row = np.hstack([C_R - I, -C_I])
+            bottom_row = np.hstack([C_I, C_R - I])
+            M = np.vstack([top_row, bottom_row])
+        else:
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+        constraint_matrices.append(M)
+    # Combine all constraints into a single large matrix
+    if len(constraint_matrices) > 0:
+        M_total = np.vstack(constraint_matrices)
+    else:
+        M_total = np.zeros((0, 2 * N))
+    return {
+        'T': T,
+        'T_vec': T_vec,
+        'T_vec_split': T_vec_split,
+        'T_vec_real': T_vec_real,
+        'T_vec_imag': T_vec_imag,
+        'X_vec': X_vec,
+        'symbol_map': symbol_map,
+        'swapping_constraint_total': M_total,
+        'N': N
+    }
+
+
+
 
 
 def reconstruct_hopping_matrix(T_original, dependent_expressions):
@@ -3097,5 +3235,12 @@ U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_repres
 # for i, U in enumerate(U_vec_transformed):
 #     print(f"i={i}, U={U}")
 ind = 6
-dict_rst=get_constraint_linear_equation_system(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+dict_rst=get_stabilizer_constraint_linear_equation_system(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+
+dict_sw=get_swapping_constraint_linear_equation_system(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+
+X_tmp1=dict_rst["X_vec"]
+X_tmp2=dict_sw["X_vec"]
+
+print(X_tmp1==X_tmp2)
 
