@@ -2936,7 +2936,7 @@ def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
 
 
 
-def get_rref_numerical(matrix, tolerance=1e-9):
+def get_rref_numerical(matrix, tolerance=1e-3):
     """
     Computes the Reduced Row Echelon Form (RREF) of a matrix numerically.
     Uses scipy.linalg.lu for fast Fortran-backed Gaussian elimination (REF),
@@ -3175,6 +3175,52 @@ Dictionary containing the symbolic matrices, the symbol map, and the numerical c
     }
 
 
+def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-3):
+    """
+    Express dependent variables in terms of free variables using the numerical RREF matrix.
+    Uses floating-point coefficients directly.
+
+    Args:
+        A_rref: The numerical Reduced Row Echelon Form matrix (NumPy array).
+        pivot_cols: List of indices corresponding to the pivot columns (dependent variables).
+        symbols: SymPy Matrix (column vector) of the symbolic variables.
+        tolerance: Numerical tolerance to filter out floating-point noise.
+
+    Returns:
+        dict: Mapping of dependent SymPy variables to their expressions in terms of free variables.
+    """
+    # 1. Identify Free Variables
+    num_vars = symbols.shape[0]
+    free_var_indices = [i for i in range(num_vars) if i not in pivot_cols]
+    dependent_expressions = {}
+
+    # 2. Iterate through Pivot Columns (Dependent Variables)
+    for row_idx, col_idx in enumerate(pivot_cols):
+        dependent_var = symbols[col_idx, 0]
+        expr_terms = []
+
+        # 3. Build the Expression
+        for free_idx in free_var_indices:
+            # Move free variable term to the RHS (multiply by -1)
+            coeff = -A_rref[row_idx, free_idx]
+
+            # Check tolerance to avoid numerical noise
+            coeff_val = float(coeff)
+
+            # Only add term if coefficient is non-zero
+            if abs(coeff_val) >= tolerance:
+                # Use the floating-point coefficient directly
+                expr_terms.append(coeff_val * symbols[free_idx, 0])
+
+        # 4. Sum terms or set to zero
+        if expr_terms:
+            expression = sum(expr_terms)
+        else:
+            expression = 0.0
+
+        dependent_expressions[dependent_var] = expression
+
+    return dependent_expressions
 
 
 
@@ -3186,10 +3232,296 @@ def reconstruct_hopping_matrix(T_original, dependent_expressions):
         T_reconstructed = T_reconstructed.subs(dep_var, expr)
     return T_reconstructed
 
+def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+    """
+    get all constraint equations for a root, use RREF to obtain independent variables
+    Args:
+        root: vertex object containing the seed hopping.
+        tree_idx: Integer index of the tree.
+        lattice_basis:  3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
+        U_vec_transformed: List of transformed spinor representation matrices U(g).
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance.
+
+    Returns:
+        dict: Dictionary containing the original matrix, reconstructed matrix, and constraint data.
+
+    """
+    dict_stabilizer=get_stabilizer_constraint_linear_equation_system(root,
+                                                                     tree_idx,
+                                                                     lattice_basis,
+                                                                     magnetic_space_group_cart_spatial,
+                                                                     U_vec_transformed,
+                                                                     delta_vec,
+                                                                     tolerance)
+    dict_swapping=get_swapping_constraint_linear_equation_system(root,
+                                                                 tree_idx,
+                                                                 lattice_basis,
+                                                                 magnetic_space_group_cart_spatial,
+                                                                 U_vec_transformed,
+                                                                 delta_vec,
+                                                                 tolerance)
+    # Retrieve the stabilizer constraint matrix
+    M_stab = dict_stabilizer["stabilizer_constraint_total"]
+    X_vec = dict_stabilizer["X_vec"]
+    T = dict_stabilizer["T"]
+    # If swapping constraints exist, stack them with the stabilizer constraints
+    if dict_swapping:
+        assert dict_stabilizer["X_vec"] == dict_swapping[
+            "X_vec"], "Mismatch in symbolic X vectors between stabilizer and swapper."
+        M_swap = dict_swapping["swapping_constraint_total"]
+        M_total = np.vstack([M_stab, M_swap])
+    else:
+        # If no swapping constraints, the total constraint matrix is just the stabilizer one
+        M_total = M_stab
+    # Compute the Reduced Row Echelon Form (RREF) to find independent variables
+    if M_total.shape[0] > 0:
+        M_rref, pivot_cols = get_rref_numerical(M_total, tolerance)
+    else:
+        # If there are no constraints at all, return empty structures for RREF
+        M_rref = M_total
+        pivot_cols = []
+
+    # Extract the dependent expressions in terms of free variables
+    dependent_expressions = get_dependent_expressions(M_rref, pivot_cols, X_vec, tolerance)
+
+    # Reshape the split vector back into the 2D matrix shape of T
+    T_split = dict_stabilizer['T_vec_split'].reshape(T.rows, T.cols)
+    # Reconstruct the 2D hopping matrix directly
+    T_reconstructed = reconstruct_hopping_matrix(T_split, dependent_expressions)
+    return {
+        'T': T,
+        'T_reconstructed': T_reconstructed,
+        'X_vec': X_vec,
+        'symbol_map': dict_stabilizer['symbol_map'],
+        'M_total': M_total,
+        'M_rref': M_rref,
+        'pivot_cols': pivot_cols,
+        'dependent_expressions': dependent_expressions,
+        'N': dict_stabilizer['N']
+    }
+
+def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec,type_linear,type_hermitian, tolerance=1e-3):
+    """
+    Propagates the reconstructed (independent) hopping matrix from a parent vertex
+    to a dependent child vertex by applying the appropriate symmetry transformations.
+
+     In a tight-binding model, if a hopping path (child) is related to another
+      hopping path (parent) by a magnetic symmetry operation g, its
+    hopping matrix T_child is entirely determined by T_parent.
+
+    The transformation depends on:
+    1. The type of constraint (Linear vs. Hermitian conjugate).
+    2. The presence of Time Reversal symmetry (delta = -1).
+
+    Mathematical Transformations:
+    Let L = V_to(g) ⊗ U(g) and R = V_from(g)^† ⊗ U(g)^†.
+
+    - Linear, no Time Reversal (delta = 1):
+      T_child = L @ T_parent @ R
+     - Linear, with Time Reversal (delta = -1):
+       T_child = L @ T_parent^* @ R
+    - Hermitian, no Time Reversal (delta = 1):
+      T_child = (L @ T_parent @ R)^†
+    - Hermitian, with Time Reversal (delta = -1):
+      T_child = (L @ T_parent^* @ R)^†
 
 
+    Args:
+        parent_vertex: The independent root vertex containing the solved T_reconstructed matrix.
+        child_vertex: The dependent vertex where the propagated matrix will be stored.
+        U_vec_transformed: List of spinor representation matrices U(g), adjusted for time reversal.
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        type_linear: "linear", string identifier for a linear symmetry constraint.
+        type_hermitian: "hermitian", string identifier for a Hermitian symmetry constraint.
+        tolerance: Numerical tolerance for floating-point comparisons (default: 1e-3).
+
+    Returns:
+         None (Modifies child_vertex.hopping.T_reconstructed in-place)
+    """
 
 
+    # Early return if child is None
+    if child_vertex is None:
+        return
+    # Get parent's hopping matrix
+    T_reconstructed_parent=parent_vertex.hopping.T_reconstructed
+    # Get the operation that transforms parent to child
+    op_idx_parent_to_child = child_vertex.hopping.operation_idx
+    # Get representation matrices for parent's atoms under this operation
+    parent_to_atom_V = (parent_vertex.hopping.to_atom.orbital_representations)[op_idx_parent_to_child]
+    parent_from_atom_V = (parent_vertex.hopping.from_atom.orbital_representations)[op_idx_parent_to_child]
+    U_mat_transformed=U_vec_transformed[op_idx_parent_to_child]
+    delta=delta_vec[op_idx_parent_to_child]
+    # Get child type
+    child_type = child_vertex.type
+    action_mat_left=np.kron(parent_to_atom_V,U_mat_transformed)
+    action_mat_right=np.kron(np.conj(parent_from_atom_V.T),np.conj(U_mat_transformed.T))
+    action_mat_left_sp=sp.Matrix(action_mat_left)
+    action_mat_right_sp=sp.Matrix(action_mat_right)
+    if child_type == type_linear:
+        if np.isclose(delta, 1.0, atol=1e-9):
+            T_reconstructed_child=action_mat_left_sp@T_reconstructed_parent@action_mat_right_sp
+        elif np.isclose(delta, -1.0, atol=1e-9):
+            T_reconstructed_child=action_mat_left_sp@T_reconstructed_parent.conjugate()@action_mat_right_sp
+        else:
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+
+    elif child_type == type_hermitian:
+        if np.isclose(delta, 1.0, atol=1e-9):
+            T_reconstructed_child =(action_mat_left_sp@T_reconstructed_parent@action_mat_right_sp).H
+        elif np.isclose(delta, -1.0, atol=1e-9):
+            T_reconstructed_child =( action_mat_left_sp @ T_reconstructed_parent.conjugate() @ action_mat_right_sp).H
+        else:
+            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+
+    else:
+        raise ValueError(f"Unknown child type: {child_type}")
+
+    # Simplify the result
+    T_reconstructed_child= sp.simplify(T_reconstructed_child)
+    # Assign to child
+    child_vertex.hopping.T_reconstructed=T_reconstructed_child
+
+
+def propagate_to_all_children(parent_vertex, U_vec_transformed, delta_vec, type_linear, type_hermitian, tolerance=1e-3):
+    """
+    Propagates the independent hopping matrix T from the root (parent) vertex
+    to all of its descendants in the constraint tree using a Breadth-First Search (BFS).
+
+    Because the constraint tree can have multiple levels (e.g., a root has a child,
+    and that child has its own children due to tree grafting), we must propagate
+    the matrix step-by-step down the hierarchy. The matrix of a grandchild is
+    calculated by applying symmetry operations to its immediate parent (the child),
+    not directly from the root.
+
+    Args:
+        parent_vertex (vertex): The root vertex of the constraint tree containing the independent T matrix.
+        U_vec_transformed (list): List of spinor representation matrices U(g), adjusted for time reversal.
+        delta_vec (np.ndarray): Array of +/- 1 indicating the presence of time reversal.
+        type_linear (str): String identifier for a linear symmetry constraint.
+        type_hermitian (str): String identifier for a Hermitian symmetry constraint.
+        tolerance (float): Numerical tolerance for floating-point comparisons (default: 1e-3).
+
+    Returns:
+        None (Modifies the T_reconstructed attribute of all descendant vertices in-place)
+    """
+    from collections import deque
+
+    # If the root has no dependent children, there is nothing to propagate
+    if len(parent_vertex.children) == 0:
+        return
+
+    # The queue stores tuples of (immediate_parent, child_node, depth_level)
+    # This allows us to process the tree level-by-level (Breadth-First Search)
+    queue = deque()
+
+    # Initialize the queue with all immediate children of the root (level 1)
+    for child in parent_vertex.children:
+        queue.append((parent_vertex, child, 1))
+
+    # Track statistics for debugging or logging purposes
+    total_propagated = 0
+    max_level = 0
+
+    # Process the queue level-by-level until all descendants are updated
+    while queue:
+        # Pop the next relationship to process
+        parent, child, level = queue.popleft()
+
+        # Propagate the T matrix from the immediate parent to this child.
+        # BUG FIX: Changed parent_vertex=parent_vertex to parent_vertex=parent
+        # to ensure grandchildren inherit from their immediate parent, not the root.
+        propagate_T_to_child(
+            parent_vertex=parent,
+            child_vertex=child,
+            U_vec_transformed=U_vec_transformed,
+            delta_vec=delta_vec,
+            type_linear=type_linear,
+            type_hermitian=type_hermitian,
+            tolerance=tolerance
+        )
+
+        # Update statistics
+        total_propagated += 1
+        max_level = max(max_level, level)
+
+        # Add all children of the current child (grandchildren of the original parent)
+        # to the queue so they can be processed in the next level of the BFS.
+        for grandchild in child.children:
+            queue.append((child, grandchild, level + 1))
+
+
+# ==============================================================================
+# Print each node with T_reconstructed
+# ==============================================================================
+def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, current_depth=0):
+    """
+    Recursively print tree structure with T_reconstructed for each node
+
+    Args:
+        vertex: vertex object to print
+        prefix: String prefix for indentation (used in recursion)
+        is_last: Boolean indicating if this is the last child
+        max_depth: Maximum depth to print (None = unlimited)
+        current_depth: Current depth in recursion
+    """
+    # Check max depth
+    if max_depth is not None and current_depth > max_depth:
+        return
+
+    # Determine node styling
+    if vertex.is_root:
+        node_label = "ROOT"
+        connector = "╔═══ "
+    else:
+        node_label = f"CHILD ({vertex.type})"
+        connector = "└── " if is_last else "├── "
+
+    # Build node description
+    hop = vertex.hopping
+    to_cell = f"[{hop.to_atom.n0},{hop.to_atom.n1},{hop.to_atom.n2}]"
+    from_cell = f"[{hop.from_atom.n0},{hop.from_atom.n1},{hop.from_atom.n2}]"
+    basic_info = f"{hop.to_atom.wyckoff_instance_id}{to_cell} ← {hop.from_atom.wyckoff_instance_id}{from_cell}"
+
+    # Print main node line
+    print(f"{prefix}{connector}{node_label}: {basic_info}, op={hop.operation_idx}, d={hop.distance:.4f}")
+
+    # Determine detail prefix
+    if vertex.is_root:
+        detail_prefix = prefix + "    "
+    else:
+        detail_prefix = prefix + ("    " if is_last else "│   ")
+
+    # Print T_reconstructed if it exists
+    if hasattr(hop, 'T_reconstructed') and hop.T_reconstructed is not None:
+        free_symbols = hop.T_reconstructed.free_symbols
+        print(f"{detail_prefix}Free parameters: {len(free_symbols)}")
+
+        # Print the matrix
+        print(f"{detail_prefix}T_reconstructed:")
+        matrix_str = sp.pretty(hop.T_reconstructed, use_unicode=False)
+        for line in matrix_str.split('\n'):
+            print(f"{detail_prefix}  {line}")
+    else:
+        print(f"{detail_prefix}T_reconstructed: NOT SET")
+
+    # Print separator
+    print(f"{detail_prefix}")
+
+    # Recursively print children
+    if vertex.children:
+        for i, child in enumerate(vertex.children):
+            is_last_child = (i == len(vertex.children) - 1)
+
+            # Determine new prefix for children
+            if vertex.is_root:
+                new_prefix = ""
+            else:
+                new_prefix = prefix + ("    " if is_last else "│   ")
+
+            print_node_with_matrix(child, new_prefix, is_last_child, max_depth, current_depth + 1)
 
 tol=1e-3
 roots_from_eq_class=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,identity_idx,type_linear,tol)
@@ -3235,12 +3567,7 @@ U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_repres
 # for i, U in enumerate(U_vec_transformed):
 #     print(f"i={i}, U={U}")
 ind = 6
-dict_rst=get_stabilizer_constraint_linear_equation_system(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
-
-dict_sw=get_swapping_constraint_linear_equation_system(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
-
-X_tmp1=dict_rst["X_vec"]
-X_tmp2=dict_sw["X_vec"]
-
-print(X_tmp1==X_tmp2)
-
+dict_rst=analyze_root_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
+all_roots_sorted[ind].hopping.T_reconstructed=dict_rst["T_reconstructed"]
+propagate_to_all_children(all_roots_sorted[ind],U_vec_transformed,delta_vec,type_linear,type_hermitian,tol)
+print_node_with_matrix(all_roots_sorted[ind])

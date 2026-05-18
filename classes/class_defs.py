@@ -291,8 +291,7 @@ class hopping:
         self.T = None  # Hopping matrix between orbital basis (sympy Matrix, to be computed)
         # Represents the tight-binding hopping matrix: center orbitals with spin ← neighbor orbitals with spin
         self.line_type = None  # for visualization
-        self.T_reconstructed = None  # reconstructed by constraints
-        self.T_reconstructed_swap = None  # swapping constraints, computed from T_reconstructed
+        self.T_reconstructed = None  # reconstructed by all constraints
 
     def conjugate(self):
         """
