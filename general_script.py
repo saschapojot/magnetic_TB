@@ -2791,10 +2791,11 @@ def compute_U_tilde(U):
     U_tilde = -1j * sigma_y @ U_star
     return U_tilde
 
-def compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec,tolerance=1e-9):
+
+def compute_U_vec_transformed_with_time_reversal(spinor_mat_representation, delta_vec, tolerance=1e-9):
     """
      Computes the list of spinor representation matrices, applying time reversal
-     indicated by delta_vec.
+     indicated by delta_vec. Small floating point artifacts are set to 0.
     Args:
         spinor_mat_representation: List of spinor representation matrices U(g).
         delta_vec: Array of 1 or -1 indicating the presence of time reversal.
@@ -2808,14 +2809,25 @@ def compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta
     U_vec_transformed = []
     # Iterate through each operation's spinor matrix and its delta value
     for U, delta in zip(spinor_mat_representation, delta_vec):
-        if np.isclose(delta, 1.0, atol=tolerance):
+        if np.isclose(delta, 1.0, atol=1e-9):
             # No time reversal, keep the original U
-            U_vec_transformed.append(deepcopy(U))
-        elif np.isclose(delta, -1.0, atol=tolerance):
+            mat = deepcopy(U)
+        elif np.isclose(delta, -1.0, atol=1e-9):
             # Time reversal is present, compute U_tilde
-            U_vec_transformed.append(compute_U_tilde(U))
+            mat = compute_U_tilde(U)
         else:
             raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+
+        # Filter out tiny floating-point artifacts
+        real_part = np.real(mat)
+        imag_part = np.imag(mat)
+
+        real_part[np.abs(real_part) < tolerance] = 0.0
+        imag_part[np.abs(imag_part) < tolerance] = 0.0
+
+        # Recombine the cleaned real and imaginary parts
+        clean_mat = real_part + 1j * imag_part
+        U_vec_transformed.append(clean_mat)
 
     return U_vec_transformed
 
@@ -3290,6 +3302,7 @@ def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
     T_split = dict_stabilizer['T_vec_split'].reshape(T.rows, T.cols)
     # Reconstruct the 2D hopping matrix directly
     T_reconstructed = reconstruct_hopping_matrix(T_split, dependent_expressions)
+
     return {
         'T': T,
         'T_reconstructed': T_reconstructed,
@@ -3353,6 +3366,7 @@ def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec
     parent_to_atom_V = (parent_vertex.hopping.to_atom.orbital_representations)[op_idx_parent_to_child]
     parent_from_atom_V = (parent_vertex.hopping.from_atom.orbital_representations)[op_idx_parent_to_child]
     U_mat_transformed=U_vec_transformed[op_idx_parent_to_child]
+
     delta=delta_vec[op_idx_parent_to_child]
     # Get child type
     child_type = child_vertex.type
@@ -3523,6 +3537,250 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
 
             print_node_with_matrix(child, new_prefix, is_last_child, max_depth, current_depth + 1)
 
+
+def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+    """
+    analyze hopping matrix constraints of root, propagate hopping matrix to the rest of the tree
+    Args:
+        root: The independent root vertex
+        tree_idx: The dependent vertex where the propagated matrix will be stored.
+        lattice_basis:  3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
+        U_vec_transformed:  List of transformed spinor representation matrices U(g).
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance.
+
+    Returns:
+
+    """
+    dict_rst = analyze_root_constraints(root,
+                                        tree_idx,
+                                        lattice_basis,
+                                        magnetic_space_group_cart_spatial,
+                                        U_vec_transformed,
+                                        delta_vec,
+                                        tolerance)
+    root.hopping.T_reconstructed=dict_rst["T_reconstructed"]
+    propagate_to_all_children(root,U_vec_transformed,delta_vec,type_linear,type_hermitian,tolerance)
+    # CRITICAL: Return the modified root so the main process can receive the updates
+    return root
+
+
+
+def analyze_root_constraints_worker(args):
+    """
+    Worker function to unpack arguments for pool.map
+    """
+    tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol = args
+    return (tree_idx, analyze_root_constraints_and_propagate(
+        root, tree_idx, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol
+    )
+    )
+
+def initialize_atom_T_tilde_lists(unit_cell_atoms, roots_list):
+    """
+    Traverses the constraint tree forest and initializes the T_tilde_list
+    for each atom in the unit cell.
+    For every hopping found in the trees (center <- neighbor), it adds an entry
+    to the center atom's T_tilde_list.
+    Args:
+        unit_cell_atoms:  List of atomIndex objects in the unit cell. These are the objects that will be modified
+        roots_list:  The forest of constraint trees
+
+    Returns:
+
+    """
+    # 1. Create a lookup map for O(1) access to unit_cell_atoms by their ID
+    ## Note: Values are references to the objects in unit_cell_atoms, not copies.
+    atom_map = {atom.wyckoff_instance_id: atom for atom in unit_cell_atoms}
+    # 2. Define a recursive helper to traverse the trees
+    def traverse_and_init(vertex):
+        hop = vertex.hopping
+        # Identify the IDs
+        to_id = hop.to_atom.wyckoff_instance_id  # Center atom ID
+        from_id = hop.from_atom.wyckoff_instance_id  # Neighbor atom ID
+        # Construct the key: (Center, Neighbor)
+        key = (to_id, from_id)
+        # Find the actual center atom object in our unit_cell_atoms list
+        if to_id in atom_map:
+            target_atom = atom_map[to_id]
+            # Initialize the key with an empty list if it doesn't exist
+            if key not in target_atom.T_tilde_list:
+                target_atom.T_tilde_list[key] = []
+        else:
+            # This indicates a critical data inconsistency
+            raise ValueError(f"Atom ID {to_id} found in hopping data but not in unit_cell_atoms list.")
+
+        # Recursively process all children
+        for child in vertex.children:
+            traverse_and_init(child)
+
+    # 3. Iterate through all roots in the forest
+    #    We filter for actual roots to be safe, though the list should be clean.
+    actual_roots = [root for root in roots_list if root.is_root]
+    if len(actual_roots)!= len(roots_list):
+        # Calculate the difference to provide a helpful error message
+        missing_count = len(roots_list) - len(actual_roots)
+        raise ValueError(
+            f"Inconsistency detected: {missing_count} item(s) in 'roots_list' are not marked as roots (is_root=False)."
+        )
+    for root in actual_roots:
+        traverse_and_init(root)
+
+
+def populate_atom_T_tilde_lists(unit_cell_atoms, roots_list, directions_to_study, dim):
+    """
+    Traverses the constraint tree forest and populates the T_tilde_list
+    for each atom in the unit cell.
+
+    For every hopping found (center <- neighbor), it:
+    1. Calculates the phase factor exp(i * k * R_neighbor) based on directions_to_study
+    2. Multiplies the hopping matrix T_reconstructed by this phase
+    3. Appends the result to the list stored in T_tilde_list[(center_id, neighbor_id)]
+
+    Args:
+        unit_cell_atoms: List of atomIndex objects in the unit cell.
+        roots_list: The forest of constraint trees
+        directions_to_study: List of strings indicating directions (e.g., ['x', 'y', 'z']).
+        dim: Dimensionality of the system (1, 2, or 3).
+
+    Returns:
+
+    """
+    # 0. Validation
+    if len(directions_to_study) != dim:
+        raise ValueError(
+            f"Dimension mismatch in populate_atom_T_tilde_lists: dim is {dim}, "
+            f"but found {len(directions_to_study)} active directions in {directions_to_study}. "
+            f"Please ensure 'directions_to_study' length matches 'dim'."
+        )
+    # 1. Define k-vector symbols
+    # We map 'x' -> k0, 'y' -> k1, 'z' -> k2 to maintain consistency with lattice vectors n0, n1, n2
+
+    k0 = sp.Symbol('k0', real=True)
+    k1 = sp.Symbol('k1', real=True)
+    k2 = sp.Symbol('k2', real=True)
+    # 2. Create a lookup map. Note: 'atom' here is a reference to the object in unit_cell_atoms.
+    atom_map = {atom.wyckoff_instance_id: atom for atom in unit_cell_atoms}
+
+    # 3. Define recursive helper
+    def traverse_and_populate(vertex):
+        hop = vertex.hopping
+
+        # --- A. Validation ---
+        if not hasattr(hop, 'T_reconstructed') or hop.T_reconstructed is None:
+            raise ValueError(f"Vertex {hop.to_atom.wyckoff_instance_id}<-{hop.from_atom.wyckoff_instance_id} "
+                             f"(op={hop.operation_idx}) missing T_reconstructed")
+
+        # --- B. Identify Atoms ---
+        to_id = hop.to_atom.wyckoff_instance_id  # Center atom (destination)
+        from_id = hop.from_atom.wyckoff_instance_id  # Neighbor atom (source)
+        # --- C. Calculate Phase Factor ---
+        # The hopping is from a neighbor at cell [n0, n1, n2] to center at [0,0,0]
+        # The Bloch phase factor is exp(i * k * R).
+        # R is the lattice vector of the neighbor relative to the center.
+        n0 = hop.from_atom.n0
+        n1 = hop.from_atom.n1
+        n2 = hop.from_atom.n2
+        # Optimization: If cell is [0,0,0], phase is exactly 1
+        if n0 == 0 and n1 == 0 and n2 == 0:
+            phase_factor = 1
+        else:
+            # Build the dot product k * R based on active directions
+            dot_product = 0
+            # Check 'x' direction (associated with n0 and k0)
+            if 'x' in directions_to_study:
+                dot_product += n0 * k0
+            # Check 'y' direction (associated with n1 and k1)
+            if 'y' in directions_to_study:
+                dot_product += n1 * k1
+
+            # Check 'z' direction (associated with n2 and k2)
+            if 'z' in directions_to_study:
+                dot_product += n2 * k2
+            # Compute exponential
+            if dot_product == 0:
+                phase_factor = 1
+            else:
+                phase_factor = sp.exp(sp.I * dot_product)
+
+        # --- D. Construct Term ---
+        T_matrix = hop.T_reconstructed
+        term = T_matrix * phase_factor
+        # --- E. Store in Dictionary ---
+        if to_id in atom_map:
+            target_atom = atom_map[to_id]
+            # The key identifies the specific pair of basis atoms involved
+            key = (to_id, from_id)
+
+            # Ensure the list exists for this pair (enforced by initialize_atom_T_tilde_lists)
+            if key not in target_atom.T_tilde_list:
+                raise KeyError(
+                    f"Key {key} not found in T_tilde_list for atom {to_id}. "
+                    "Each atom in unit_cell_atoms must be initialized with initialize_atom_T_tilde_lists."
+                )
+
+            # Append the phase-modulated matrix
+            target_atom.T_tilde_list[key].append(term)
+        else:
+            raise ValueError(f"Atom ID {to_id} found in hopping but not in unit_cell_atoms list.")
+        # --- F. Recursion ---
+        # Traverse all children to capture derived hoppings
+        for child in vertex.children:
+            traverse_and_populate(child)
+
+    # 4. Iterate through all trees
+    # Filter for actual roots to ensure we start at the top of trees
+    actual_roots = [root for root in roots_list if root.is_root]
+    if len(actual_roots) != len(roots_list):
+        missing_count = len(roots_list) - len(actual_roots)
+        raise ValueError(
+            f"Inconsistency detected: {missing_count} item(s) in 'roots_list' are not marked as roots (is_root=False)."
+        )
+    for root in actual_roots:
+        traverse_and_populate(root)
+
+def sum_atom_T_tilde_lists(unit_cell_atoms):
+    """
+    Iterates through each atom in the unit cell and sums the phase-modulated
+    matrices stored in T_tilde_list. The result is stored in T_tilde_val.
+    For each key (center_id, neighbor_id) in atom.T_tilde_list:
+        T_tilde_val[key] = Sum(T_tilde_list[key])
+    Args:
+        unit_cell_atoms:  List of atomIndex objects. Modified in-place.
+
+    Returns:
+
+    """
+    for i, atom in enumerate(unit_cell_atoms):
+        # Iterate over each neighbor interaction (key is (to_id, from_id))
+        for key, matrix_list in atom.T_tilde_list.items():
+            if not matrix_list:
+                raise ValueError(
+                    f"Error processing Atom {atom.wyckoff_instance_id}: "
+                    f"The interaction key {key} exists in T_tilde_list but contains no matrices to sum."
+                )
+            # Get dimensions from the first matrix to create a matching zero matrix
+            rows, cols = matrix_list[0].shape
+            #  Initialize total_matrix as a zero matrix of the same size
+            total_matrix = sp.zeros(rows, cols)
+            #  Sum all matrices
+            for matrix in matrix_list:
+                total_matrix += matrix
+            #  Simplify the result
+            total_matrix_simplified = sp.simplify(total_matrix)
+            # Store in T_tilde_val
+            atom.T_tilde_val[key] = total_matrix_simplified
+
+
+
+
+
+
+
+
+
+
 tol=1e-3
 roots_from_eq_class=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,identity_idx,type_linear,tol)
 # print_all_trees(roots_from_eq_class)
@@ -3543,31 +3801,49 @@ all_roots_sorted = sorted(roots_grafted_hermitian, key=get_hopping_distance)
 print_all_trees(all_roots_sorted)
 
 
-#  Prepare the data package to plot
-data_package_2_plt = {
-    "roots": all_roots_sorted,
-    "config": parsed_config,
-    "unit_cell_atoms":unit_cell_atoms
-}
 
-#  Serialize (Pickle) and Encode (Base64)
-# We use Base64 to ensure the binary pickle data doesn't get corrupted
-# when passing through the text-based stdin.
-try:
-    pickled_data_2_plt = pickle.dumps(data_package_2_plt)
-    encoded_data_2_plt = base64.b64encode(pickled_data_2_plt).decode('utf-8')
-except Exception as e:
-    print(f"Error preparing data for visualization: {e}")
 
 
 # ind=1
 # T=create_hopping_matrix(all_roots_sorted[ind],ind)
 # sp.pprint(T)
 U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec)
-# for i, U in enumerate(U_vec_transformed):
-#     print(f"i={i}, U={U}")
-ind = 6
-dict_rst=analyze_root_constraints(all_roots_sorted[ind],ind,lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec,tol)
-all_roots_sorted[ind].hopping.T_reconstructed=dict_rst["T_reconstructed"]
-propagate_to_all_children(all_roots_sorted[ind],U_vec_transformed,delta_vec,type_linear,type_hermitian,tol)
-print_node_with_matrix(all_roots_sorted[ind])
+
+from multiprocessing import Pool
+
+# Prepare arguments for parallel processing
+args_list = [
+    (tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol)
+    for tree_idx, root in enumerate(all_roots_sorted)
+]
+
+# Determine number of processes
+# Use all available cores, or specify a different number
+num_processes =12
+print(f"Using {num_processes} processes for parallel computation...")
+
+with Pool(processes=num_processes) as pool:
+    # Use imap for progress tracking (optional) or map for simplicity
+    results = pool.map(analyze_root_constraints_worker, args_list)
+print("Parallel processing complete!")
+
+roots_solved=[root for _,root in results]
+print(f"✓ Analyzed {len(roots_solved)} roots in parallel")
+print("=" * 80)
+
+
+# for tree_idx, root in enumerate(roots_solved):
+#     hop = root.hopping
+#
+#     print(f"\n{'─' * 80}")
+#     print(f"Tree {tree_idx}: Distance = {hop.distance:.6f}, "
+#           f"Hopping: {hop.to_atom.position_name} ← {hop.from_atom.position_name}")
+#     print(f"{'─' * 80}")
+#
+#     print_node_with_matrix(root, max_depth=None)
+#
+# print("\n" + "=" * 80)
+
+initialize_atom_T_tilde_lists(unit_cell_atoms,roots_solved)
+populate_atom_T_tilde_lists(unit_cell_atoms,roots_solved,directions_to_study,search_dim)
+sum_atom_T_tilde_lists(unit_cell_atoms)
