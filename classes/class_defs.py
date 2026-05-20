@@ -524,3 +524,534 @@ class vertex():
                 f"op={self.hopping.operation_idx}, "
                 f"parent={parent_str}, "
                 f"children={len(self.children)})")
+
+
+
+class T_tilde_total():
+    """
+     this class stores the k-space Hamiltonian blocks, and constructs the total k-space Hamiltonian
+    """
+
+    def __init__(self, unit_cell_atoms):
+        """
+
+        Args:
+            unit_cell_atoms:  unit_cell_atoms contain constructed T blocks, it is deep-copied to decouple
+        """
+        self.unit_cell_atoms = deepcopy(unit_cell_atoms)
+        # Flattened dictionary to store all T_tilde_val blocks from all atoms
+        # Key: (to_atom_id, from_atom_id), Value: SymPy Matrix
+        self.T_tilde_from_unit_cell_atoms = {}
+        # Iterate through each atom in the unit cell
+        for atom in self.unit_cell_atoms:
+            # Iterate through the T_tilde_val dictionary of the atom
+            # atom.T_tilde_val contains the summed k-space hopping matrices
+            for key, matrix in atom.T_tilde_val.items():
+                # Add the matrix to the flattened dictionary
+                self.T_tilde_from_unit_cell_atoms[key] = matrix
+
+        self.complete_hermitian_blocks()
+        # Initialize attributes for block matrix construction
+        self.total_hamiltonian = None  # The final assembled matrix
+        self.hamiltonian_dimension = None  # Total dimension of the Hamiltonian
+        self.sorted_wyckoff_instance_ids = None
+        self.block_dimensions = None
+        self.system_name = self.unit_cell_atoms[0].parsed_config["name"]
+
+
+
+    def complete_hermitian_blocks(self):
+        """
+        Iterates through all atoms and ensures that for every block H_ij,
+        the corresponding H_ji = H_ij^dagger exists in the total Hamiltonian.
+        Returns:
+
+        """
+        for atom in self.unit_cell_atoms:
+            # Iterate through the T_tilde_val dictionary of the atom
+            # key is (this_wyckoff_instance_id, other_wyckoff_instance_id)
+            for (this_id, other_id), matrix in atom.T_tilde_val.items():
+                # Swap the key to represent the conjugate block
+                swapped_key = (other_id, this_id)
+                # Check if the swapped key exists in the master dictionary
+                if swapped_key not in self.T_tilde_from_unit_cell_atoms:
+                    # If not, add it with the Hermitian conjugate of the matrix
+                    self.T_tilde_from_unit_cell_atoms[swapped_key] = matrix.H
+
+
+    def sort_wyckoff_instance_ids(self):
+        """
+        Sort wyckoff_instance_ids using natural sorting that respects the structure:
+        <Element><WyckoffPosition>_<AtomIndex>
+        Format examples:
+        - 'C0_0': Carbon, Wyckoff position 0, atom index 0
+        - 'Ca0_1': Calcium, Wyckoff position 0, atom index 1
+        - 'Ca1_0': Calcium, Wyckoff position 1, atom index 0
+
+        Sorting priority:
+        1. Element symbol (alphabetically)
+        2. Wyckoff position (numerically)
+        3. Atom index (numerically)
+
+        Examples:
+            Input:  ['Ca0_1', 'C0_0', 'Ca1_0', 'Ca0_0', 'C0_1']
+            Output: ['C0_0', 'C0_1', 'Ca0_0', 'Ca0_1', 'Ca1_0']
+            Grouped by element → position → index:
+            C:  position 0: [C0_0, C0_1]
+            Ca: position 0: [Ca0_0, Ca0_1]
+                position 1: [Ca1_0]
+
+        Returns:
+            list: Naturally sorted list of wyckoff_instance_ids
+        TODO: name convention in conf file should be optimized
+
+        """
+
+        def parse_wyckoff_id(wyckoff_id):
+            """
+            Parse wyckoff_instance_id into (element, position, index).
+            Args:
+                wyckoff_id: String like 'Ca0_1', 'C0_0', 'N1_0'
+
+            Returns:
+                 tuple: (element_str, position_int, index_int)
+            Examples:
+                'Ca0_1' → ('Ca', 0, 1)
+                'C0_0'  → ('C', 0, 0)
+                'N1_0'  → ('N', 1, 0)
+            """
+            # Match: one or more letters, followed by digits, underscore, digits
+            # Example: Ca0_1 -> Group 1: Ca, Group 2: 0, Group 3: 1
+            match = re.match(r'^([A-Za-z]+)(\d+)_(\d+)$', wyckoff_id)
+
+            if not match:
+                raise ValueError(f"Invalid wyckoff_instance_id format: {wyckoff_id}. Expected format like 'Ca0_1'")
+
+            element = match.group(1)
+            position = int(match.group(2))  # Wyckoff position index
+            index = int(match.group(3))  # Atom index within that Wyckoff position
+
+            return (element, position, index)
+
+        # Extract unique wyckoff_instance_ids from unit_cell_atoms
+        wyckoff_instance_ids = [atom.wyckoff_instance_id for atom in self.unit_cell_atoms]
+        # Sort by (element, position, index) tuple
+        sorted_ids = sorted(wyckoff_instance_ids, key=parse_wyckoff_id)
+        self.sorted_wyckoff_instance_ids = sorted_ids
+        return sorted_ids
+
+    def construct_total_hamiltonian(self):
+        """
+        Construct the total k-space Hamiltonian matrix from block matrices.
+        The Hamiltonian is block-structured based on wyckoff_instance_ids:
+
+        H_total = | H_00  H_01  H_02  ... |
+                 | H_10  H_11  H_12  ... |
+                | H_20  H_21  H_22  ... |
+               | ...   ...   ...   ... |
+        where H_ij is the hopping block from atom j to atom i.
+
+        This method directly assembles the block matrices using SymPy's block matrix
+        construction
+
+        Workflow:
+        1. Sort wyckoff_instance_ids to establish consistent ordering
+        2. Build a 2D list of block matrices
+        3. Use sp.BlockMatrix to construct the total Hamiltonian
+
+        Returns:
+             sympy.Matrix: Complete k-space Hamiltonian matrix
+        """
+        # Step 1: Sort wyckoff_instance_ids to establish row/column ordering
+        self.sort_wyckoff_instance_ids()
+        # Step 2: Calculate block dimensions for each wyckoff_instance_id
+        block_dimensions = {}
+        for atom in self.unit_cell_atoms:
+            wyckoff_id = atom.wyckoff_instance_id
+            num_orbitals = atom.num_orbitals
+            block_dimensions[wyckoff_id] = num_orbitals
+        # print(f"block_dimensions={block_dimensions}")
+        # Step 3: Calculate tot al Hamiltonian dimension
+        self.block_dimensions = block_dimensions
+        self.hamiltonian_dimension = sum(block_dimensions.values())
+        # print(f"self.hamiltonian_dimension={self.hamiltonian_dimension}")
+        # Step 4: Build 2D list of block matrices
+        # blocks[i][j] corresponds to H[to_id_i, from_id_j]
+        # n_atoms = len(self.sorted_wyckoff_instance_ids)
+        blocks = []
+        for i, to_id in enumerate(self.sorted_wyckoff_instance_ids):
+            row_blocks = []
+            for j, from_id in enumerate(self.sorted_wyckoff_instance_ids):
+                key = (to_id, from_id)
+                # Check if block exists in dictionary
+                if key in self.T_tilde_from_unit_cell_atoms:
+                    # Use existing block matrix
+                    block = self.T_tilde_from_unit_cell_atoms[key]
+                else:
+                    # Required block is missing - this means the block is 0
+                    n_rows = self.block_dimensions[to_id]
+                    n_cols = self.block_dimensions[from_id]
+                    # Create a zero matrix of the correct size
+                    block = sp.zeros(n_rows, n_cols)
+
+                row_blocks.append(block)
+            blocks.append(row_blocks)
+
+        block_matrix = sp.BlockMatrix(blocks)
+        # Step 6: Convert BlockMatrix to regular Matrix for easier manipulation
+        self.total_hamiltonian = sp.Matrix(block_matrix)
+        self.total_hamiltonian = sp.expand(sp.simplify(self.total_hamiltonian))
+        return self.total_hamiltonian
+
+
+    def _fix_latex_subscripts(self, latex_str):
+        r"""
+        Fix LaTeX double-subscript errors by converting re_XXX and im_XXX to Re(XXX) and Im(XXX).
+
+        Transforms:
+            re_T^{0}_{2s,2s} → \operatorname{Re}(T^{0}_{2s,2s})
+            im_T^{0}_{2s,2s} → \operatorname{Im}(T^{0}_{2s,2s})
+            \overline{re_T^{0}_{2s,2s}} → \overline{\operatorname{Re}(T^{0}_{2s,2s})}
+            \operatorname{re} → \operatorname{Re}
+            \operatorname{im} → \operatorname{Im}
+
+        Args:
+            latex_str: LaTeX string with potential re_XXX and im_XXX symbols
+
+        Returns:
+            Fixed LaTeX string
+        """
+        import re
+
+        # Pattern to match re_SYMBOL or im_SYMBOL where SYMBOL can contain ^{...} and _{...}
+        # This captures the entire symbol including superscripts and subscripts
+
+        # Match re_ or im_ followed by anything up to the next space, operator, or delimiter
+        # We need to be careful to capture the full symbol including ^{...} and _{...}
+
+        def replace_re_im(match):
+            """Helper function to replace matched re_/im_ patterns"""
+            prefix = match.group(1)  # 're' or 'im'
+            symbol = match.group(2)  # The rest of the symbol
+
+            # Determine the LaTeX operator name
+            if prefix == 're':
+                op_name = r'\operatorname{Re}'
+            else:  # prefix == 'im'
+                op_name = r'\operatorname{Im}'
+
+            return f"{op_name}({symbol})"
+
+        # Pattern explanation:
+        # (re|im)_          : Match 're_' or 'im_'
+        # ([A-Za-z]+        : Start capturing: one or more letters (symbol name)
+        # (?:\^{[^}]+})*    : Zero or more superscripts ^{...}
+        # (?:_{[^}]+})*     : Zero or more subscripts _{...}
+        # )                 : End capturing
+        pattern = r'(re|im)_([A-Za-z]+(?:\^{[^}]+})*(?:_{[^}]+})*)'
+
+        # Apply replacement
+        fixed_str = re.sub(pattern, replace_re_im, latex_str)
+
+        # Fix SymPy's standard output for real/imaginary parts
+        # SymPy outputs \operatorname{re} and \operatorname{im} (lowercase)
+        # We replace them with \operatorname{Re} and \operatorname{Im} (uppercase)
+        fixed_str = fixed_str.replace(r'\operatorname{re}', r'\operatorname{Re}')
+        fixed_str = fixed_str.replace(r'\operatorname{im}', r'\operatorname{Im}')
+
+        return fixed_str
+
+
+    def write_hamiltonian_to_latex(self, filename, precision=3):
+        H = sp.simplify(self.total_hamiltonian)
+        # Convert to LaTeX using SymPy's latex() function
+
+        H = self.round_matrix_coefficients(H, precision)
+        H = sp.expand(H)
+        latex_str = sp.latex(H, mat_delim='[')
+        latex_str = self._fix_latex_subscripts(latex_str)
+        # Write to file
+        with open(filename, 'w') as f:
+            f.write(latex_str)
+
+    def round_matrix_coefficients(self, matrix, precision):
+        """
+        Round all numerical coefficients in a symbolic matrix to specified precision.
+        """
+        rows, cols = matrix.shape
+        rounded_matrix = sp.zeros(rows, cols)
+
+        for i in range(rows):
+            for j in range(cols):
+                rounded_matrix[i, j] = self.round_expression_coefficients(matrix[i, j], precision)
+
+        return rounded_matrix
+
+
+    def round_expression_coefficients(self, expr, precision):
+        """
+        Round numerical coefficients in a SymPy expression to specified precision.
+
+        This recursively processes the entire expression tree.
+        """
+        if expr == 0 or expr is sp.S.Zero:
+            return sp.S.Zero
+
+        # If it's a number, round it directly
+        if expr.is_Number:
+            return self._round_number(expr, precision)
+
+        # If it's an addition, round each term separately
+        if isinstance(expr, sp.Add):
+            rounded_terms = []
+            for term in expr.args:
+                rounded_term = self.round_expression_coefficients(term, precision)
+                if rounded_term != sp.S.Zero:  # Skip zero terms
+                    rounded_terms.append(rounded_term)
+
+            if len(rounded_terms) == 0:
+                return sp.S.Zero
+            elif len(rounded_terms) == 1:
+                return rounded_terms[0]
+            else:
+                return sp.Add(*rounded_terms)
+
+        # If it's a multiplication, process it specially
+        if isinstance(expr, sp.Mul):
+            return self._round_multiplication(expr, precision)
+
+        # If it's a power, process base and exponent
+        if isinstance(expr, sp.Pow):
+            base_rounded = self.round_expression_coefficients(expr.base, precision)
+            exp_rounded = self.round_expression_coefficients(expr.exp, precision)
+            return base_rounded ** exp_rounded
+
+        # For other types (like Symbol), return as-is
+        return expr
+
+
+    def _round_number(self, num, precision):
+        """Helper to round a SymPy number to specified precision."""
+        threshold = 10 ** (-precision - 2)  # Threshold for treating as zero
+
+        if num.is_real:
+            val = float(num)
+            if abs(val) < threshold:
+                return sp.S.Zero
+            rounded_val = round(val, precision)
+            # Return as integer if it's a whole number
+            if abs(rounded_val - round(rounded_val)) < threshold:
+                return sp.Integer(int(round(rounded_val)))
+            return sp.Float(rounded_val, precision)
+
+        elif num.is_complex:
+            real_part = float(sp.re(num))
+            imag_part = float(sp.im(num))
+
+            # Round and check threshold for real part
+            if abs(real_part) < threshold:
+                real_rounded = 0.0
+            else:
+                real_rounded = round(real_part, precision)
+
+            # Round and check threshold for imaginary part
+            if abs(imag_part) < threshold:
+                imag_rounded = 0.0
+            else:
+                imag_rounded = round(imag_part, precision)
+
+            # Construct the result
+            if real_rounded == 0.0 and imag_rounded == 0.0:
+                return sp.S.Zero
+            elif imag_rounded == 0.0:
+                if abs(real_rounded - round(real_rounded)) < threshold:
+                    return sp.Integer(int(round(real_rounded)))
+                return sp.Float(real_rounded, precision)
+            elif real_rounded == 0.0:
+                if abs(imag_rounded - round(imag_rounded)) < threshold:
+                    return sp.I * sp.Integer(int(round(imag_rounded)))
+                return sp.I * sp.Float(imag_rounded, precision)
+            else:
+                result = sp.S.Zero
+                if abs(real_rounded - round(real_rounded)) < threshold:
+                    result += sp.Integer(int(round(real_rounded)))
+                else:
+                    result += sp.Float(real_rounded, precision)
+
+                if abs(imag_rounded - round(imag_rounded)) < threshold:
+                    result += sp.I * sp.Integer(int(round(imag_rounded)))
+                else:
+                    result += sp.I * sp.Float(imag_rounded, precision)
+                return result
+
+        else:
+            return num
+
+    def _round_multiplication(self, expr, precision):
+        """
+        Round coefficients in a multiplication expression.
+
+        Strategy: Extract ALL numerical factors, round their product,
+        then multiply by all symbolic factors.
+        """
+        # Separate all arguments into numerical and symbolic
+        numerical_factors = []
+        symbolic_factors = []
+
+        for arg in expr.args:
+            if arg.is_Number:
+                numerical_factors.append(arg)
+            else:
+                # Recursively process non-numerical arguments
+                # (they might contain nested multiplications with numbers)
+                processed_arg = self.round_expression_coefficients(arg, precision)
+                if processed_arg != sp.S.Zero:
+                    symbolic_factors.append(processed_arg)
+
+        # Multiply all numerical factors together
+        if len(numerical_factors) == 0:
+            numerical_coeff = sp.S.One
+        else:
+            numerical_coeff = sp.S.One
+            for num in numerical_factors:
+                numerical_coeff *= num
+
+        # Round the combined numerical coefficient
+        rounded_coeff = self._round_number(numerical_coeff, precision)
+
+        # If coefficient rounded to zero, return zero
+        if rounded_coeff == sp.S.Zero:
+            return sp.S.Zero
+
+        # Reconstruct the expression
+        if len(symbolic_factors) == 0:
+            # Only numerical part
+            return rounded_coeff
+        elif rounded_coeff == sp.S.One:
+            # Only symbolic part
+            if len(symbolic_factors) == 1:
+                return symbolic_factors[0]
+            else:
+                return sp.Mul(*symbolic_factors)
+        else:
+            # Both numerical and symbolic parts
+            if len(symbolic_factors) == 1:
+                return rounded_coeff * symbolic_factors[0]
+            else:
+                return rounded_coeff * sp.Mul(*symbolic_factors)
+
+    def create_parameter_input_file(self, filename):
+        """
+        Create a text file for user to input hopping parameter values.
+        Extracts all free parameters from the Hamiltonian and creates an input template.
+
+        Format:
+            re_T_xxx=
+            im_T_xxx=
+        Real and imaginary parts of the same parameter are grouped together,
+        with a dashed line separating different base parameters.
+
+        Args:
+            filename: Path to the output text file
+
+        Returns:
+            dict: Information about the parameters written
+            {
+                're_params': list,
+                'im_params': list
+            }
+        """
+        if self.total_hamiltonian is None:
+            raise ValueError("Hamiltonian not constructed yet. Call construct_total_hamiltonian() first.")
+
+        # Extract all free symbols from the Hamiltonian
+        all_symbols = self.total_hamiltonian.free_symbols
+
+        # Separate symbols into categories
+        hopping_params = []
+        k_params = set()  # k0, k1, k2 (exclude these)
+
+        for symbol in all_symbols:
+            symbol_str = str(symbol)
+            # Skip k-vector symbols
+            if symbol_str in ['k0', 'k1', 'k2']:
+                k_params.add(symbol_str)
+                continue
+            # Check if it's a hopping parameter (real or imaginary)
+            if symbol_str.startswith('re_T') or symbol_str.startswith('im_T'):
+                hopping_params.append(symbol_str)
+
+        # Custom sorting function to group re_ and im_ parts together
+        def sort_key(param_name):
+            # Extract the base name by removing the prefix
+            if param_name.startswith('re_'):
+                base_name = param_name[3:]
+                prefix_order = 0  # Real parts come first
+            elif param_name.startswith('im_'):
+                base_name = param_name[3:]
+                prefix_order = 1  # Imaginary parts come second
+            else:
+                base_name = param_name
+                prefix_order = 2
+
+            # Sort primarily by the base name, secondarily by the prefix order
+            return (base_name, prefix_order)
+
+        # Sort parameters using the custom key
+        hopping_params_sorted = sorted(hopping_params, key=sort_key)
+
+        # Separate them back for the summary/return dictionary
+        re_params_sorted = [p for p in hopping_params_sorted if p.startswith('re_')]
+        im_params_sorted = [p for p in hopping_params_sorted if p.startswith('im_')]
+
+        # Write to file
+        with open(filename, 'w') as f:
+            f.write("# Hopping Parameter Input File\n")
+            f.write("# Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+            f.write("#\n")
+            f.write("# Instructions:\n")
+            f.write("# 1. Fill in numerical values after the '=' symbol\n")
+            f.write("# 2. Use floating point numbers (e.g., 1.0, -2.5, 0.0)\n")
+            f.write("# 3. Lines starting with '#' are comments and will be ignored\n")
+            f.write("# 4. Do not modify the parameter names (left side of '=')\n")
+            f.write("#\n")
+            f.write(f"#   - Independent real parts (re_T): {len(re_params_sorted)}\n")
+            f.write(f"#   - Independent imaginary parts (im_T): {len(im_params_sorted)}\n")
+            f.write("#\n")
+            f.write("# " + "=" * 70 + "\n\n")
+
+            # Write all parameters grouped together
+            if hopping_params_sorted:
+                f.write("# " + "=" * 70 + "\n")
+                f.write("# Hopping Parameters (Real and Imaginary Parts)\n")
+                f.write("# " + "=" * 70 + "\n\n")
+
+                previous_base = None
+                for param in hopping_params_sorted:
+                    # Extract the base name to check for changes
+                    if param.startswith('re_'):
+                        current_base = param[3:]
+                    elif param.startswith('im_'):
+                        current_base = param[3:]
+                    else:
+                        current_base = param
+
+                    # If the base name changed and it's not the first parameter, write a separator
+                    if previous_base is not None and current_base != previous_base:
+                        f.write("# " + "-" * 70 + "\n")
+
+                    f.write(f"{param}=\n")
+                    previous_base = current_base
+                f.write("\n")
+
+        # Print summary
+        print(f"\n✓ Created parameter input file: {filename}")
+        print(f"\nParameter summary:")
+        print(f"  - Independent real parts (re_T): {len(re_params_sorted)}")
+        print(f"  - Independent imaginary parts (im_T): {len(im_params_sorted)}")
+
+        # Return summary information
+        return {
+            're_params': re_params_sorted,
+            'im_params': im_params_sorted
+        }

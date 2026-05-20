@@ -15,7 +15,7 @@ from name_conventions import orbital_map, processed_input_pkl_file_name, type_li
 
 sp.init_printing(use_unicode=False, wrap_line=False)
 
-from classes.class_defs import frac_to_cartesian, atomIndex,hopping, vertex
+from classes.class_defs import frac_to_cartesian, atomIndex,hopping, vertex,T_tilde_total
 # this script computes for magnetic space group system
 
 # ==============================================================================
@@ -3847,3 +3847,10 @@ print("=" * 80)
 initialize_atom_T_tilde_lists(unit_cell_atoms,roots_solved)
 populate_atom_T_tilde_lists(unit_cell_atoms,roots_solved,directions_to_study,search_dim)
 sum_atom_T_tilde_lists(unit_cell_atoms)
+T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
+H=T_tilde_tot_obj.construct_total_hamiltonian()
+config_file_path = parsed_config["config_file_path"]
+config_dir = Path(config_file_path).parent
+out_matrix_file_name=str(config_dir/H_latex_file_name)
+param_input_file = str(config_dir/hopping_parameters_template_file_name)
+param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
