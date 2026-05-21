@@ -669,7 +669,7 @@ class T_tilde_total():
         for atom in self.unit_cell_atoms:
             wyckoff_id = atom.wyckoff_instance_id
             num_orbitals = atom.num_orbitals
-            block_dimensions[wyckoff_id] = num_orbitals
+            block_dimensions[wyckoff_id] = num_orbitals*2 # account for spins
         # print(f"block_dimensions={block_dimensions}")
         # Step 3: Calculate tot al Hamiltonian dimension
         self.block_dimensions = block_dimensions
@@ -1055,3 +1055,295 @@ class T_tilde_total():
             're_params': re_params_sorted,
             'im_params': im_params_sorted
         }
+
+
+    def get_k_block_structure_html(self, directions_to_study):
+        """
+        Appends the general matrix structure (symbolic h_ij form) to the HTML file.
+        Inserts the content before the closing </body> tag.
+        Args:
+            directions_to_study: list of directions (e.g. ["x", "y"])
+
+        Returns:
+
+        """
+        if self.hamiltonian_dimension is None:
+            print("Warning: Hamiltonian dimension not set. Skipping structure print.")
+            return
+
+        # Map string directions to indices for display
+        # The Hamiltonian uses k0, k1, k2 internally
+        direction_map = {"x": 0, "y": 1, "z": 2}
+
+        # 1. Construct the Left Hand Side: h(k0, k1, ...)
+        k_args = []
+        for direction in directions_to_study:
+            # Handle both string "x" and potential integers (just in case)
+            d_str = str(direction).lower()
+            if d_str in direction_map:
+                idx = direction_map[d_str]
+                k_args.append(f"k_{{{idx}}}")
+            else:
+                raise ValueError(f"Unknown direction '{direction}'. Allowed directions are 'x', 'y', 'z'.")
+
+        lhs = f"h({','.join(k_args)})"
+
+        # 2. Construct the Matrix Rows: h_{ij}
+        N = self.hamiltonian_dimension
+        rows = []
+        for i in range(N):
+            cols = []
+            for j in range(N):
+                # Check if the element is exactly zero in the calculated Hamiltonian
+                is_zero = False
+                element = self.total_hamiltonian[i, j]
+                if element == 0 or element == sp.S.Zero:
+                    is_zero = True
+                if is_zero == True:
+                    cols.append("0")
+                else:
+                    # Format indices, e.g., h_{00}, h_{01}
+                    cols.append(f"h_{{{i}{j}}}")
+
+            # Join columns with '&'
+            rows.append(" & ".join(cols))
+        # Join rows with LaTeX newlines
+        matrix_body = " \\\\\n        ".join(rows)
+        # 3. Assemble the full LaTeX string
+        # We wrap it in $$ ... $$ for MathJax block rendering
+        latex_block = (
+            f"$$\n"
+            f"\\begin{{align}}\n"
+            f"    {lhs}&=\\begin{{bmatrix}}\n"
+            f"        {matrix_body}\n"
+            f"    \\end{{bmatrix}}.\n"
+            f"\\end{{align}}\n"
+            f"$$"
+        )
+        # 4. Create the HTML snippet
+        html_snippet = f"""
+                <div class="section">
+                    <h2>General Matrix Structure</h2>
+                    <p>The total Hamiltonian dimension is {N} &times; {N}. The general form is:</p>
+                    {latex_block}
+                </div>
+                """
+        return html_snippet
+
+    def get_orbitals_by_wyckoff_id(self, wyckoff_id):
+        """
+        Retrieves the list of orbitals associated with a specific wyckoff_instance_id.
+        Args:
+            wyckoff_id: The unique identifier string (e.g., 'C00', 'Fe10')
+
+        Returns:
+            list: A list of orbital names (e.g., ['s', 'px', 'py', 'pz'])
+
+        Raises:
+            ValueError: If the wyckoff_id is not found in the unit cell atoms.
+        """
+        for atom in self.unit_cell_atoms:
+            if atom.wyckoff_instance_id == wyckoff_id:
+                return atom.orbitals
+        raise ValueError(f"Wyckoff instance ID '{wyckoff_id}' not found in unit_cell_atoms.")
+
+
+    def get_hamiltonian_basis_explanation(self):
+        """
+         Generates a detailed list describing every row/column of the Hamiltonian.
+         Each string corresponds to one specific basis vector (one orbital on one atom with spin).
+        Returns:
+            list: A list of strings, where the index of the string in the list
+                  matches the row/column index in the Hamiltonian.
+                  Example: ['C00: s_up', 'C00: s_down', 'C00: px_up', 'C00: px_down', ...]
+
+        """
+        # Ensure IDs are sorted so the order matches the matrix construction
+        if self.sorted_wyckoff_instance_ids is None:
+            self.sort_wyckoff_instance_ids()
+        basis_list = []
+        for wyckoff_id in self.sorted_wyckoff_instance_ids:
+            # Retrieve orbitals for this atom
+            orbitals = self.get_orbitals_by_wyckoff_id(wyckoff_id)
+            # Create a string for each individual orbital including spin states
+            for orbital in orbitals:
+                basis_list.append(f"{wyckoff_id}: {orbital}_up")
+                basis_list.append(f"{wyckoff_id}: {orbital}_down")
+        return basis_list
+
+
+    def get_detailed_hamiltonian_table_html(self):
+        """
+         Generates an HTML table snippet representing the Hamiltonian matrix.
+        Row and Column headers are derived from get_hamiltonian_basis_explanation().
+        Cells contain '0' or 'h_{ij}' based on the Hamiltonian structure.
+        Returns:
+
+        """
+        if self.total_hamiltonian is None:
+            print("<p>Hamiltonian not constructed.</p>")
+            exit(11)
+        basis_list = self.get_hamiltonian_basis_explanation()
+        N = self.hamiltonian_dimension
+        # Start table construction
+        # We use a wrapper div for horizontal scrolling if the matrix is large
+        html_parts = [
+            '<div style="overflow-x: auto; margin-top: 20px;">',
+            '<table style="border-collapse: collapse; width: 100%; font-size: 0.9em;">',
+            '<thead>',
+            '<tr>',
+            # Top-left corner cell (empty or label)
+            '<th style="padding: 8px; border: 1px solid #ddd; background-color: #f2f2f2;">Basis / Basis</th>'
+        ]
+        # Create Column Headers
+        for label in basis_list:
+            # Rotate long labels to save space, or keep them standard
+            html_parts.append(
+                f'<th style="padding: 8px; border: 1px solid #ddd; background-color: #f8f9fa; min-width: 80px;">{label}</th>')
+        html_parts.append('</tr></thead><tbody>')
+        # Create Rows
+        for i in range(N):
+            html_parts.append('<tr>')
+            # Row Header
+            html_parts.append(
+                f'<th style="padding: 8px; border: 1px solid #ddd; background-color: #f8f9fa; text-align: left;">{basis_list[i]}</th>')
+            for j in range(N):
+                is_zero = False
+                element = self.total_hamiltonian[i, j]
+                if element == 0 or element == sp.S.Zero:
+                    is_zero = True
+                if is_zero:
+                    cell_content = '<span style="color: #ccc;">0</span>'
+                else:
+                    # Wrap in \( \) for inline MathJax rendering
+                    cell_content = f'\\( h_{{{i}{j}}} \\)'
+                # Add cell to row
+                html_parts.append(
+                    f'<td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{cell_content}</td>')
+            html_parts.append('</tr>')
+        html_parts.append('</tbody></table></div>')
+        return "".join(html_parts)
+
+
+    def get_nonzero_elements_html(self, precision=3):
+        """
+         Generates an HTML snippet listing all non-zero elements of the Hamiltonian.
+          Each element is formatted as h_{ij} = value using LaTeX.
+        Args:
+            precision:
+
+        Returns:
+
+        """
+        if self.total_hamiltonian is None:
+            raise ValueError("Hamiltonian not constructed")
+        # Simplify, round, and expand the Hamiltonian
+        H = sp.simplify(self.total_hamiltonian)
+        H = self.round_matrix_coefficients(H, precision)
+        H = sp.expand(H)
+        rows, cols = H.shape
+        print(f"rows={rows}, cols={cols}")
+        html_parts = [
+            '<div class="section">',
+            '<h2>Non-zero Hamiltonian Elements</h2>',
+            '<div style="display: flex; flex-direction: column; gap: 15px;">'
+        ]
+        for i in range(rows):
+            for j in range(cols):
+                element = H[i, j]
+                if i == j:
+                    element = sp.expand_complex(element)
+                    element = sp.simplify(element)
+                # Check if element is non-zero
+                if element != 0 and element != sp.S.Zero:
+                    # Convert to LaTeX
+                    latex_val = sp.latex(element)
+                    # Fix subscripts (re_... -> Re(...))
+                    latex_val = self._fix_latex_subscripts(latex_val)
+
+                    # Create a styled block for the equation
+                    # Using $$ ... $$ for display math inside the block
+                    block = (
+                        f'<div style="border: 1px solid #eee; padding: 20px; '
+                        f'border-radius: 5px; background: #fafafa; overflow-x: auto;">'
+                        f'$$ h_{{{i}{j}}} = {latex_val} $$'
+                        f'</div>'
+                    )
+                    html_parts.append(block)
+
+        html_parts.append('</div></div>')
+        return "".join(html_parts)
+
+
+    def write_to_html(self, filename, directions_to_study, precision=3):
+        """
+        Initialize an HTML file with basic structure and title.
+        includes MathJax for future LaTeX rendering.
+        """
+        # Get the matrix structure HTML string
+        matrix_structure_html = self.get_k_block_structure_html(directions_to_study)
+        # Get the detailed table structure (Grid form with labels)
+        detailed_table_html = self.get_detailed_hamiltonian_table_html()
+
+        # Get the non-zero elements HTML snippet
+        nonzero_elements_html = self.get_nonzero_elements_html(precision)
+
+        html_content = rf"""<!DOCTYPE html>
+           <html lang="en">
+           <head>
+               <meta charset="UTF-8">
+               <meta name="viewport" content="width=device-width, initial-scale=1.0">
+               <title>Hamiltonian Analysis</title>
+               <!-- Load MathJax for LaTeX rendering -->
+               <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+               <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+               <style>
+                   body {{
+                       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                       margin: 40px;
+                       background-color: #fdfdfd;
+                       color: #333;
+                   }}
+                   h1 {{
+                       color: #2c3e50;
+                       border-bottom: 2px solid #3498db;
+                       padding-bottom: 10px;
+                   }}
+                   .container {{
+                       max-width: 1200px;
+                       margin: 0 auto;
+                   }}
+                   .section {{
+                       margin-top: 30px;
+                       padding: 20px;
+                       background: #fff;
+                       border-radius: 8px;
+                       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                   }}
+               </style>
+           </head>
+           <body>
+               <div class="container">
+                   <h1>Hamiltonian block in k space, {self.system_name}</h1>
+                   <p>Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+
+                   <!-- Insert General Matrix Structure -->
+                   {matrix_structure_html}
+                   <!-- Detailed Table -->
+                   <div class="section">
+                       <h2>Detailed Hamiltonian Structure</h2>
+                       <p>The table below maps the matrix indices to specific Atoms and Orbitals. Non-zero elements are denoted by \( h_{{ij}} \).</p>
+                       {detailed_table_html}
+                   </div>
+                   <!-- Insert Non-zero Elements -->
+                   {nonzero_elements_html}
+               </div>
+           </body>
+           </html>"""
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            print(f"✓ HTML file initialized: {filename}")
+        except Exception as e:
+            print(f"✗ Failed to write HTML file: {e}")

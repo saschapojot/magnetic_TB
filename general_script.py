@@ -3847,10 +3847,22 @@ print("=" * 80)
 initialize_atom_T_tilde_lists(unit_cell_atoms,roots_solved)
 populate_atom_T_tilde_lists(unit_cell_atoms,roots_solved,directions_to_study,search_dim)
 sum_atom_T_tilde_lists(unit_cell_atoms)
-T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
-H=T_tilde_tot_obj.construct_total_hamiltonian()
-config_file_path = parsed_config["config_file_path"]
-config_dir = Path(config_file_path).parent
-out_matrix_file_name=str(config_dir/H_latex_file_name)
-param_input_file = str(config_dir/hopping_parameters_template_file_name)
-param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
+
+
+
+# T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
+# H=T_tilde_tot_obj.construct_total_hamiltonian()
+#
+# sp.pprint(H.shape)
+# print(H.is_hermitian)
+# config_file_path = parsed_config["config_file_path"]
+# config_dir = Path(config_file_path).parent
+# out_matrix_file_name=str(config_dir/H_latex_file_name)
+#
+# T_tilde_tot_obj.write_hamiltonian_to_latex(out_matrix_file_name)
+# out_html_file_name=str(config_dir/H_html_file_name)
+# T_tilde_tot_obj.write_to_html(out_html_file_name,directions_to_study,3)
+#
+#
+# param_input_file = str(config_dir/hopping_parameters_template_file_name)
+# param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
