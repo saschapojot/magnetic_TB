@@ -2792,47 +2792,47 @@ def compute_U_tilde(U):
     return U_tilde
 
 
-def compute_U_vec_transformed_with_time_reversal(spinor_mat_representation, delta_vec, tolerance=1e-9):
-    """
-     Computes the list of spinor representation matrices, applying time reversal
-     indicated by delta_vec. Small floating point artifacts are set to 0.
-    Args:
-        spinor_mat_representation: List of spinor representation matrices U(g).
-        delta_vec: Array of 1 or -1 indicating the presence of time reversal.
-                   1 means no time reversal, -1 means time reversal.
-        tolerance: Numerical tolerance for floating-point comparison.
+# def compute_spinor_mat_representation_with_time_reversal(spinor_mat_representation, delta_vec, tolerance=1e-9):
+#     """
+#      Computes the list of spinor representation matrices, applying time reversal
+#      indicated by delta_vec. Small floating point artifacts are set to 0.
+#     Args:
+#         spinor_mat_representation: List of spinor representation matrices U(g).
+#         delta_vec: Array of 1 or -1 indicating the presence of time reversal.
+#                    1 means no time reversal, -1 means time reversal.
+#         tolerance: Numerical tolerance for floating-point comparison.
+#
+#     Returns:  A list of matrices where each element is U if delta=1,
+#               or U_tilde if delta=-1.
+#
+#     """
+#     spinor_mat_representation = []
+#     # Iterate through each operation's spinor matrix and its delta value
+#     for U, delta in zip(spinor_mat_representation, delta_vec):
+#         if np.isclose(delta, 1.0, atol=1e-9):
+#             # No time reversal, keep the original U
+#             mat = deepcopy(U)
+#         elif np.isclose(delta, -1.0, atol=1e-9):
+#             # Time reversal is present, compute U_tilde
+#             mat = compute_U_tilde(U)
+#         else:
+#             raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
+#
+#         # Filter out tiny floating-point artifacts
+#         real_part = np.real(mat)
+#         imag_part = np.imag(mat)
+#
+#         real_part[np.abs(real_part) < tolerance] = 0.0
+#         imag_part[np.abs(imag_part) < tolerance] = 0.0
+#
+#         # Recombine the cleaned real and imaginary parts
+#         clean_mat = real_part + 1j * imag_part
+#         spinor_mat_representation.append(clean_mat)
+#
+#     return spinor_mat_representation
 
-    Returns:  A list of matrices where each element is U if delta=1,
-              or U_tilde if delta=-1.
 
-    """
-    U_vec_transformed = []
-    # Iterate through each operation's spinor matrix and its delta value
-    for U, delta in zip(spinor_mat_representation, delta_vec):
-        if np.isclose(delta, 1.0, atol=1e-9):
-            # No time reversal, keep the original U
-            mat = deepcopy(U)
-        elif np.isclose(delta, -1.0, atol=1e-9):
-            # Time reversal is present, compute U_tilde
-            mat = compute_U_tilde(U)
-        else:
-            raise ValueError(f"Unexpected delta value: {delta}. Expected 1.0 or -1.0.")
-
-        # Filter out tiny floating-point artifacts
-        real_part = np.real(mat)
-        imag_part = np.imag(mat)
-
-        real_part[np.abs(real_part) < tolerance] = 0.0
-        imag_part[np.abs(imag_part) < tolerance] = 0.0
-
-        # Recombine the cleaned real and imaginary parts
-        clean_mat = real_part + 1j * imag_part
-        U_vec_transformed.append(clean_mat)
-
-    return U_vec_transformed
-
-
-def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     Generate the symbolic algebraic constraints imposed by stabilizer operations
     on the independent hopping matrix of a root vertex.
@@ -2842,7 +2842,7 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
         tree_idx:  Integer index of the tree (used for naming symbolic variables).
         lattice_basis: 3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial:  List of spatial part matrices [R|t].
-        U_vec_transformed: List of transformed spinor representation matrices U(g) depending on delta
+        spinor_mat_representation: List of transformed spinor representation matrices U(g) depending on delta
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance   for floating-point comparison.
 
@@ -2851,14 +2851,17 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
     """
     # Create hopping matrix
     T = create_hopping_matrix(root, tree_idx)
+    # sp.pprint(T)
     root.hopping.T = deepcopy(T)
     # Get atom information
     root_to_atom = root.hopping.to_atom
     root_from_atom = root.hopping.from_atom
     # Get stabilizer operations
     root_stabilizer = list(find_root_stabilizer(root, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
+    # print(f"root_stabilizer={root_stabilizer}")
     # Row-major vectorization of the original T matrix
     T_vec = T.reshape(T.rows * T.cols, 1)
+    # sp.pprint(T_vec)
     T_vec_left=deepcopy(T_vec)
     stab_constraints_all = []
     for stab_ind,op_idx_n_vec in  enumerate(root_stabilizer):
@@ -2868,7 +2871,7 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
         # Get representation matrices directly from atoms
         V_to = root_to_atom.get_numpy_representation_matrix(op_idx)
         V_from = root_from_atom.get_numpy_representation_matrix(op_idx)
-        spinor_mat=U_vec_transformed[op_idx]
+        spinor_mat=spinor_mat_representation[op_idx]
         action_mat_left=np.kron(V_to, spinor_mat)
         action_mat_right=np.kron(V_from.conj().T,spinor_mat.conj().T)
         action_on_vectorized_T=np.kron(action_mat_left,action_mat_right.T)
@@ -2888,7 +2891,7 @@ def get_stabilizer_constraints(root,tree_idx,lattice_basis,magnetic_space_group_
         'T': T,
         'stab_constraints_all': stab_constraints_all,
     }
-def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     Generate the symbolic algebraic constraints imposed by swapping operations
     on the independent hopping matrix of a root vertex.
@@ -2897,7 +2900,7 @@ def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
         tree_idx: Integer index of the tree (used for naming symbolic variables).
         lattice_basis:  3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
-        U_vec_transformed: List of transformed spinor representation matrices U(g) depending on delta
+        spinor_mat_representation: List of transformed spinor representation matrices U(g) depending on delta
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance   for floating-point comparison.
 
@@ -2914,6 +2917,7 @@ def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
         return {}
     # Get stabilizer operations
     root_swapper = list(find_root_swapper(root, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
+    # print(f"root_swapper={root_swapper}")
     # Row-major vectorization of the original T matrix
     T_vec = T.reshape(T.rows * T.cols, 1)
     T_vec_left = deepcopy(T_vec)
@@ -2925,7 +2929,7 @@ def get_swapping_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
         # Get representation matrices directly from atoms
         V_to = root_to_atom.get_numpy_representation_matrix(op_idx)
         V_from = root_from_atom.get_numpy_representation_matrix(op_idx)
-        spinor_mat = U_vec_transformed[op_idx]
+        spinor_mat = spinor_mat_representation[op_idx]
         action_mat_left = np.kron(V_to, spinor_mat)
         action_mat_right = np.kron(V_from.conj().T, spinor_mat.conj().T)
         action_on_vectorized_T = np.kron(action_mat_left, action_mat_right.T)
@@ -2954,11 +2958,15 @@ def get_rref_numerical(matrix, tolerance=1e-3):
     Uses scipy.linalg.lu for fast Fortran-backed Gaussian elimination (REF),
     followed by back-substitution to achieve RREF.
     """
-    P, L, U = scipy.linalg.lu(matrix)
+    if matrix.shape[0] == 0 or matrix.shape[1] == 0:
+        return matrix, []
 
+    P, L, U = scipy.linalg.lu(matrix)
     rows, cols = U.shape
     pivot_cols = []
 
+    # Compact U by moving non-zero rows to the top
+    current_row = 0
     for r in range(rows):
         non_zeros = np.where(np.abs(U[r, :]) > tolerance)[0]
         if len(non_zeros) == 0:
@@ -2967,13 +2975,23 @@ def get_rref_numerical(matrix, tolerance=1e-3):
         pivot_col = non_zeros[0]
         pivot_cols.append(pivot_col)
 
-        U[r, :] = U[r, :] / U[r, pivot_col]
+        # Move row r to current_row if they are different (shifts zero rows down)
+        if r != current_row:
+            U[current_row, :] = U[r, :]
+            U[r, :] = 0.0
 
-        for i in range(r):
+        # Normalize the pivot row
+        U[current_row, :] = U[current_row, :] / U[current_row, pivot_col]
+
+        # Eliminate above the pivot to achieve Reduced Row Echelon Form
+        for i in range(current_row):
             factor = U[i, pivot_col]
             if np.abs(factor) > tolerance:
-                U[i, :] -= factor * U[r, :]
+                U[i, :] -= factor * U[current_row, :]
 
+        current_row += 1
+
+    # Clean up floating point noise
     U[np.abs(U) < tolerance] = 0.0
 
     return U, pivot_cols
@@ -3008,7 +3026,7 @@ def split_complex_symbols(T_matrix):
 
     return T_split, symbol_map
 
-def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     obtaining all equations for stabilizer constraints, split symbols into real and imaginary parts
     Args:
@@ -3016,7 +3034,7 @@ def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis
         tree_idx: Integer index of the tree.
         lattice_basis: 3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial:  List of spatial part matrices [R|t].
-        U_vec_transformed: List of transformed spinor representation matrices U(g).
+        spinor_mat_representation: List of transformed spinor representation matrices U(g).
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance.
 
@@ -3030,7 +3048,7 @@ def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis
         tree_idx=tree_idx,
         lattice_basis=lattice_basis,
         magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
-        U_vec_transformed=U_vec_transformed,
+        spinor_mat_representation=spinor_mat_representation,
         delta_vec=delta_vec,
         tolerance=tolerance
     )
@@ -3098,7 +3116,7 @@ def get_stabilizer_constraint_linear_equation_system(root,tree_idx,lattice_basis
         'N': N
     }
 
-def get_swapping_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def get_swapping_constraint_linear_equation_system(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     obtaining all equations for swapping constraints, split symbols into real and imaginary parts
     Args:
@@ -3106,7 +3124,7 @@ def get_swapping_constraint_linear_equation_system(root,tree_idx,lattice_basis,m
         tree_idx: Integer index of the tree.
         lattice_basis: 3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
-        U_vec_transformed: List of transformed spinor representation matrices U(g).
+        spinor_mat_representation: List of transformed spinor representation matrices U(g).
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance.
 
@@ -3118,7 +3136,7 @@ Dictionary containing the symbolic matrices, the symbol map, and the numerical c
                                              tree_idx=tree_idx,
                                              lattice_basis=lattice_basis,
                                              magnetic_space_group_cart_spatial=magnetic_space_group_cart_spatial,
-                                             U_vec_transformed=U_vec_transformed,
+                                             spinor_mat_representation=spinor_mat_representation,
                                              delta_vec=delta_vec,
                                              tolerance=tolerance)
     if len(constraints_data) == 0:
@@ -3126,6 +3144,7 @@ Dictionary containing the symbolic matrices, the symbol map, and the numerical c
 
     T = constraints_data['T']
     swapping_constraints_all=constraints_data["swapping_constraints_all"]
+
     # Vectorize T into a column vector
     N = T.rows * T.cols
     T_vec = T.reshape(N, 1)
@@ -3244,7 +3263,7 @@ def reconstruct_hopping_matrix(T_original, dependent_expressions):
         T_reconstructed = T_reconstructed.subs(dep_var, expr)
     return T_reconstructed
 
-def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     get all constraint equations for a root, use RREF to obtain independent variables
     Args:
@@ -3252,7 +3271,7 @@ def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
         tree_idx: Integer index of the tree.
         lattice_basis:  3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
-        U_vec_transformed: List of transformed spinor representation matrices U(g).
+        spinor_mat_representation: List of transformed spinor representation matrices U(g).
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance.
 
@@ -3264,14 +3283,14 @@ def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
                                                                      tree_idx,
                                                                      lattice_basis,
                                                                      magnetic_space_group_cart_spatial,
-                                                                     U_vec_transformed,
+                                                                     spinor_mat_representation,
                                                                      delta_vec,
                                                                      tolerance)
     dict_swapping=get_swapping_constraint_linear_equation_system(root,
                                                                  tree_idx,
                                                                  lattice_basis,
                                                                  magnetic_space_group_cart_spatial,
-                                                                 U_vec_transformed,
+                                                                 spinor_mat_representation,
                                                                  delta_vec,
                                                                  tolerance)
     # Retrieve the stabilizer constraint matrix
@@ -3300,9 +3319,15 @@ def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
 
     # Reshape the split vector back into the 2D matrix shape of T
     T_split = dict_stabilizer['T_vec_split'].reshape(T.rows, T.cols)
+    # sp.pprint(T_split)
     # Reconstruct the 2D hopping matrix directly
     T_reconstructed = reconstruct_hopping_matrix(T_split, dependent_expressions)
-
+    # i=1
+    # j=2
+    # sp.pprint(T_reconstructed)
+    # sp.pprint(T_reconstructed[i,j])
+    # sp.pprint(T_reconstructed[j,i])
+    # sp.pprint(T_reconstructed==T_reconstructed.H)
     return {
         'T': T,
         'T_reconstructed': T_reconstructed,
@@ -3315,7 +3340,7 @@ def analyze_root_constraints(root,tree_idx,lattice_basis,magnetic_space_group_ca
         'N': dict_stabilizer['N']
     }
 
-def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec,type_linear,type_hermitian, tolerance=1e-3):
+def propagate_T_to_child(parent_vertex, child_vertex,spinor_mat_representation,delta_vec,type_linear,type_hermitian, tolerance=1e-3):
     """
     Propagates the reconstructed (independent) hopping matrix from a parent vertex
     to a dependent child vertex by applying the appropriate symmetry transformations.
@@ -3344,7 +3369,7 @@ def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec
     Args:
         parent_vertex: The independent root vertex containing the solved T_reconstructed matrix.
         child_vertex: The dependent vertex where the propagated matrix will be stored.
-        U_vec_transformed: List of spinor representation matrices U(g), adjusted for time reversal.
+        spinor_mat_representation: List of spinor representation matrices U(g), adjusted for time reversal.
         delta_vec: Array of ±1 indicating the presence of time reversal.
         type_linear: "linear", string identifier for a linear symmetry constraint.
         type_hermitian: "hermitian", string identifier for a Hermitian symmetry constraint.
@@ -3365,7 +3390,7 @@ def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec
     # Get representation matrices for parent's atoms under this operation
     parent_to_atom_V = (parent_vertex.hopping.to_atom.orbital_representations)[op_idx_parent_to_child]
     parent_from_atom_V = (parent_vertex.hopping.from_atom.orbital_representations)[op_idx_parent_to_child]
-    U_mat_transformed=U_vec_transformed[op_idx_parent_to_child]
+    U_mat_transformed=spinor_mat_representation[op_idx_parent_to_child]
 
     delta=delta_vec[op_idx_parent_to_child]
     # Get child type
@@ -3399,7 +3424,7 @@ def propagate_T_to_child(parent_vertex, child_vertex,U_vec_transformed,delta_vec
     child_vertex.hopping.T_reconstructed=T_reconstructed_child
 
 
-def propagate_to_all_children(parent_vertex, U_vec_transformed, delta_vec, type_linear, type_hermitian, tolerance=1e-3):
+def propagate_to_all_children(parent_vertex, spinor_mat_representation, delta_vec, type_linear, type_hermitian, tolerance=1e-3):
     """
     Propagates the independent hopping matrix T from the root (parent) vertex
     to all of its descendants in the constraint tree using a Breadth-First Search (BFS).
@@ -3412,7 +3437,7 @@ def propagate_to_all_children(parent_vertex, U_vec_transformed, delta_vec, type_
 
     Args:
         parent_vertex (vertex): The root vertex of the constraint tree containing the independent T matrix.
-        U_vec_transformed (list): List of spinor representation matrices U(g), adjusted for time reversal.
+        spinor_mat_representation (list): List of spinor representation matrices U(g), adjusted for time reversal.
         delta_vec (np.ndarray): Array of +/- 1 indicating the presence of time reversal.
         type_linear (str): String identifier for a linear symmetry constraint.
         type_hermitian (str): String identifier for a Hermitian symmetry constraint.
@@ -3450,7 +3475,7 @@ def propagate_to_all_children(parent_vertex, U_vec_transformed, delta_vec, type_
         propagate_T_to_child(
             parent_vertex=parent,
             child_vertex=child,
-            U_vec_transformed=U_vec_transformed,
+            spinor_mat_representation=spinor_mat_representation,
             delta_vec=delta_vec,
             type_linear=type_linear,
             type_hermitian=type_hermitian,
@@ -3538,7 +3563,7 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
             print_node_with_matrix(child, new_prefix, is_last_child, max_depth, current_depth + 1)
 
 
-def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,U_vec_transformed,delta_vec,tolerance=1e-3):
+def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
     analyze hopping matrix constraints of root, propagate hopping matrix to the rest of the tree
     Args:
@@ -3546,7 +3571,7 @@ def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_
         tree_idx: The dependent vertex where the propagated matrix will be stored.
         lattice_basis:  3x3 array of primitive lattice basis vectors.
         magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
-        U_vec_transformed:  List of transformed spinor representation matrices U(g).
+        spinor_mat_representation:  List of transformed spinor representation matrices U(g).
         delta_vec: Array of ±1 indicating the presence of time reversal.
         tolerance: Numerical tolerance.
 
@@ -3557,11 +3582,11 @@ def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_
                                         tree_idx,
                                         lattice_basis,
                                         magnetic_space_group_cart_spatial,
-                                        U_vec_transformed,
+                                        spinor_mat_representation,
                                         delta_vec,
                                         tolerance)
     root.hopping.T_reconstructed=dict_rst["T_reconstructed"]
-    propagate_to_all_children(root,U_vec_transformed,delta_vec,type_linear,type_hermitian,tolerance)
+    propagate_to_all_children(root,spinor_mat_representation,delta_vec,type_linear,type_hermitian,tolerance)
     # CRITICAL: Return the modified root so the main process can receive the updates
     return root
 
@@ -3571,9 +3596,9 @@ def analyze_root_constraints_worker(args):
     """
     Worker function to unpack arguments for pool.map
     """
-    tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol = args
+    tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, spinor_mat_representation, delta_vec, tol = args
     return (tree_idx, analyze_root_constraints_and_propagate(
-        root, tree_idx, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol
+        root, tree_idx, lattice_basis, magnetic_space_group_cart_spatial, spinor_mat_representation, delta_vec, tol
     )
     )
 
@@ -3773,13 +3798,261 @@ def sum_atom_T_tilde_lists(unit_cell_atoms):
             atom.T_tilde_val[key] = total_matrix_simplified
 
 
+def check_vertex_T_reconstructed_invariant(vertex, lattice_basis, magnetic_space_group_cart_spatial, spinor_mat_representation,
+                                           delta_vec, tolerance=1e-3):
+    """
+    Checks if the reconstructed hopping matrix of a vertex is invariant under its stabilizer operations.
+    """
+    vertex_stabilizer = list(find_root_stabilizer(vertex, lattice_basis, magnetic_space_group_cart_spatial, tolerance))
+
+    # Get atoms
+    to_atom = vertex.hopping.to_atom
+    from_atom = vertex.hopping.from_atom
+
+    # Get the hopping matrix
+    if not hasattr(vertex.hopping, 'T_reconstructed') or vertex.hopping.T_reconstructed is None:
+        return {
+            'is_invariant': False,
+            'stabilizer_ops': vertex_stabilizer,
+            'max_diff': None,
+            'violations': [],
+            'error': 'T_reconstructed not set'
+        }
+
+    T_reconstructed = vertex.hopping.T_reconstructed
+
+    # Check each stabilizer operation
+    violations = []
+    max_diff_overall = 0.0
+
+    for op_idx, n_vec in vertex_stabilizer:
+
+        max_coeff_this_op = 0.0
+        is_zero = True
+
+        delta = delta_vec[op_idx]
+
+        # Get representation matrices
+        V_to = to_atom.get_representation_matrix(op_idx)
+        V_from = from_atom.get_representation_matrix(op_idx)
+        U_mat_transformed = spinor_mat_representation[op_idx]
+
+        action_mat_left = np.kron(V_to, U_mat_transformed)
+        action_mat_right = np.kron(V_from.conj().T, U_mat_transformed.conj().T)
+
+        action_mat_left_sp = sp.Matrix(action_mat_left)
+        action_mat_right_sp = sp.Matrix(action_mat_right)
+
+        # Transform the matrix
+        if np.isclose(delta, 1, 1e-9):
+            transformed_T_reconstructed = action_mat_left_sp @ T_reconstructed @ action_mat_right_sp
+        elif np.isclose(delta, -1, 1e-9):
+            transformed_T_reconstructed = action_mat_left_sp @ sp.conjugate(T_reconstructed) @ action_mat_right_sp
+        else:
+            raise ValueError(f"wrong numerical value: delta={delta}")
+
+        # Compute difference
+        T_diff = T_reconstructed - transformed_T_reconstructed
+        T_diff_simplified = sp.simplify(T_diff)
+
+        for i in range(T_diff_simplified.shape[0]):
+            for j in range(T_diff_simplified.shape[1]):
+                element = T_diff_simplified[i, j]
+
+                # If element has free symbols, check coefficients
+                if element.free_symbols:
+                    # Expand the expression to get all terms
+                    element_expanded = sp.expand(element)
+                    symbols_in_element = element_expanded.free_symbols
+
+                    # Check coefficient of each symbol
+                    for sym in symbols_in_element:
+                        coeff = element_expanded.coeff(sym)
+                        try:
+                            # FIX: Use complex() instead of float() to handle imaginary noise
+                            coeff_val = abs(complex(coeff))
+                            max_coeff_this_op = max(max_coeff_this_op, coeff_val)
+
+                            if coeff_val > tolerance:
+                                is_zero = False
+                        except Exception:
+                            is_zero = False
+
+                    # Also check the constant term (coefficient of 1)
+                    const_term = element_expanded.as_coeff_Add()[0]
+                    if const_term != 0:
+                        try:
+                            # FIX: Use complex() here as well
+                            const_val = abs(complex(const_term))
+                            max_coeff_this_op = max(max_coeff_this_op, const_val)
+
+                            if const_val > tolerance:
+                                is_zero = False
+                        except Exception:
+                            is_zero = False
+
+                else:
+                    # No free symbols, just a number
+                    try:
+                        element_val = complex(element)
+                        element_abs = abs(element_val)
+                        max_coeff_this_op = max(max_coeff_this_op, element_abs)
+
+                        if element_abs > tolerance:
+                            is_zero = False
+                    except Exception:
+                        if element != 0:
+                            is_zero = False
+
+        max_diff_overall = max(max_diff_overall, max_coeff_this_op)
+
+        if not is_zero:
+            violations.append((op_idx, max_coeff_this_op))
+
+    # Overall invariance check
+    is_invariant = (len(violations) == 0)
+
+    return {
+        'is_invariant': is_invariant,
+        'stabilizer_ops': vertex_stabilizer,
+        'max_diff': max_diff_overall,
+        'violations': violations,
+        'num_stabilizers': len(vertex_stabilizer),
+        'num_violations': len(violations)
+    }
 
 
+def check_tree_T_reconstructed_invariant(vertex, lattice_basis, magnetic_space_group_cart_spatial,
+                                         spinor_mat_representation, delta_vec, tolerance=1e-3):
+    """
+    Recursively checks if the reconstructed hopping matrix of EVERY vertex in a tree
+    is invariant under its respective stabilizer operations.
+
+    Args:
+        vertex: The starting vertex object (usually the root of the tree).
+        lattice_basis: 3x3 array of primitive lattice basis vectors.
+        magnetic_space_group_cart_spatial: List of spatial part matrices [R|t].
+        spinor_mat_representation: List of transformed spinor representation matrices U(g).
+        delta_vec: Array of ±1 indicating the presence of time reversal.
+        tolerance: Numerical tolerance for floating-point comparisons.
+
+    Returns:
+        dict: A dictionary containing:
+            - 'all_invariant' (bool): True if EVERY node in the tree is invariant.
+            - 'node_results' (list): A list of detailed results for each node checked.
+    """
+    # 1. Check the current vertex
+    current_result = check_vertex_T_reconstructed_invariant(
+        vertex,
+        lattice_basis,
+        magnetic_space_group_cart_spatial,
+        spinor_mat_representation,
+        delta_vec,
+        tolerance
+    )
+
+    # Add a descriptive identifier to the result so we know which node this is
+    hop = vertex.hopping
+    to_cell = f"[{hop.to_atom.n0},{hop.to_atom.n1},{hop.to_atom.n2}]"
+    from_cell = f"[{hop.from_atom.n0},{hop.from_atom.n1},{hop.from_atom.n2}]"
+    node_id = f"{hop.to_atom.wyckoff_instance_id}{to_cell} <- {hop.from_atom.wyckoff_instance_id}{from_cell} (op={hop.operation_idx})"
+
+    current_result['node_id'] = node_id
+    current_result['is_root'] = vertex.is_root
+    current_result['type'] = vertex.type
+
+    # Initialize the aggregate tracking variables
+    all_invariant = current_result['is_invariant']
+    all_results = [current_result]
+
+    # 2. Recursively check all children
+    for child in vertex.children:
+        child_tree_result = check_tree_T_reconstructed_invariant(
+            child,
+            lattice_basis,
+            magnetic_space_group_cart_spatial,
+            spinor_mat_representation,
+            delta_vec,
+            tolerance
+        )
+
+        # Aggregate the boolean status
+        all_invariant = all_invariant and child_tree_result['all_invariant']
+
+        # Aggregate the detailed reports
+        all_results.extend(child_tree_result['node_results'])
+
+    return {
+        'all_invariant': all_invariant,
+        'node_results': all_results
+    }
 
 
+def check_hamiltonian_hermitian(H, tolerance=1e-3):
+    """
+    Robustly checks if a symbolic Hamiltonian matrix is Hermitian (H = H†).
+    Accounts for floating-point noise and unsimplified 1.0 * x vs x terms.
 
+    Args:
+        H: SymPy Matrix representing the Hamiltonian.
+        tolerance: Numerical tolerance for floating-point comparisons.
 
+    Returns:
+        dict: A dictionary containing:
+            - 'is_hermitian' (bool): True if the matrix is Hermitian within tolerance.
+            - 'max_diff' (float): The maximum numerical difference found.
+            - 'violations' (list): List of tuples containing the (row, col) index and the violating expression.
+    """
+    print("Checking Hermiticity of the total Hamiltonian...")
 
+    # Compute the difference between H and its conjugate transpose
+    H_diff = H - H.H
+
+    rows, cols = H_diff.shape
+    violations = []
+    max_diff_overall = 0.0
+
+    for i in range(rows):
+        for j in range(cols):
+            element = H_diff[i, j]
+
+            # Fast skip for exact zeros
+            if element == 0:
+                continue
+
+            # Expand to ensure terms are separated properly
+            element_expanded = sp.expand(element)
+            is_zero = True
+
+            # Break the expression into a list of added terms
+            # e.g., "A + B - C" becomes (A, B, -C)
+            terms = sp.Add.make_args(element_expanded)
+
+            for term in terms:
+                # Extract the numerical coefficient from the term
+                # e.g., "6.12e-17 * I * re_T * exp(I*k0)" -> coeff = 6.12e-17 * I
+                coeff, _ = term.as_coeff_Mul()
+
+                try:
+                    # Convert the SymPy Number to a Python complex, then take magnitude
+                    coeff_val = abs(complex(coeff))
+                    max_diff_overall = max(max_diff_overall, coeff_val)
+
+                    if coeff_val > tolerance:
+                        is_zero = False
+                except Exception:
+                    # Fallback if something unexpected happens
+                    is_zero = False
+
+            # Record the violation if any term's coefficient exceeds the tolerance
+            if not is_zero:
+                violations.append(((i, j), element_expanded))
+
+    return {
+        'is_hermitian': len(violations) == 0,
+        'max_diff': max_diff_overall,
+        'violations': violations
+    }
 
 tol=1e-3
 roots_from_eq_class=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,identity_idx,type_linear,tol)
@@ -3807,13 +4080,14 @@ print_all_trees(all_roots_sorted)
 # ind=1
 # T=create_hopping_matrix(all_roots_sorted[ind],ind)
 # sp.pprint(T)
-U_vec_transformed=compute_U_vec_transformed_with_time_reversal(spinor_mat_representation,delta_vec)
+# spinor_mat_representation=compute_spinor_mat_representation_with_time_reversal(spinor_mat_representation,delta_vec)
+
 
 from multiprocessing import Pool
 
 # Prepare arguments for parallel processing
 args_list = [
-    (tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, U_vec_transformed, delta_vec, tol)
+    (tree_idx, root, lattice_basis, magnetic_space_group_cart_spatial, spinor_mat_representation, delta_vec, tol)
     for tree_idx, root in enumerate(all_roots_sorted)
 ]
 
@@ -3830,6 +4104,7 @@ print("Parallel processing complete!")
 roots_solved=[root for _,root in results]
 print(f"✓ Analyzed {len(roots_solved)} roots in parallel")
 print("=" * 80)
+
 
 
 # for tree_idx, root in enumerate(roots_solved):
@@ -3850,19 +4125,19 @@ sum_atom_T_tilde_lists(unit_cell_atoms)
 
 
 
-# T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
-# H=T_tilde_tot_obj.construct_total_hamiltonian()
-#
-# sp.pprint(H.shape)
-# print(H.is_hermitian)
-# config_file_path = parsed_config["config_file_path"]
-# config_dir = Path(config_file_path).parent
-# out_matrix_file_name=str(config_dir/H_latex_file_name)
-#
-# T_tilde_tot_obj.write_hamiltonian_to_latex(out_matrix_file_name)
-# out_html_file_name=str(config_dir/H_html_file_name)
-# T_tilde_tot_obj.write_to_html(out_html_file_name,directions_to_study,3)
-#
-#
-# param_input_file = str(config_dir/hopping_parameters_template_file_name)
-# param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
+T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
+H=T_tilde_tot_obj.construct_total_hamiltonian()
+sp.pprint(H[0,8])
+sp.pprint(H[8,0])
+
+config_file_path = parsed_config["config_file_path"]
+config_dir = Path(config_file_path).parent
+out_matrix_file_name=str(config_dir/H_latex_file_name)
+
+T_tilde_tot_obj.write_hamiltonian_to_latex(out_matrix_file_name)
+out_html_file_name=str(config_dir/H_html_file_name)
+T_tilde_tot_obj.write_to_html(out_html_file_name,directions_to_study,3)
+
+
+param_input_file = str(config_dir/hopping_parameters_template_file_name)
+param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)

@@ -664,11 +664,14 @@ class T_tilde_total():
         """
         # Step 1: Sort wyckoff_instance_ids to establish row/column ordering
         self.sort_wyckoff_instance_ids()
+        # print(f"sorted_wyckoff_instance_ids={self.sorted_wyckoff_instance_ids}")
         # Step 2: Calculate block dimensions for each wyckoff_instance_id
         block_dimensions = {}
         for atom in self.unit_cell_atoms:
             wyckoff_id = atom.wyckoff_instance_id
+            # print(f"wyckoff_id={wyckoff_id}")
             num_orbitals = atom.num_orbitals
+            # print(f"num_orbitals*2={num_orbitals*2}")
             block_dimensions[wyckoff_id] = num_orbitals*2 # account for spins
         # print(f"block_dimensions={block_dimensions}")
         # Step 3: Calculate tot al Hamiltonian dimension
@@ -758,7 +761,10 @@ class T_tilde_total():
         # We replace them with \operatorname{Re} and \operatorname{Im} (uppercase)
         fixed_str = fixed_str.replace(r'\operatorname{re}', r'\operatorname{Re}')
         fixed_str = fixed_str.replace(r'\operatorname{im}', r'\operatorname{Im}')
-
+        fixed_str = re.sub(r'\_\{up\}', r'\\_up', fixed_str)
+        fixed_str = re.sub(r'\_\{down\}', r'\\_down', fixed_str)
+        fixed_str = re.sub(r'(?<!\\)_up', r'\\_up', fixed_str)
+        fixed_str = re.sub(r'(?<!\\)_down', r'\\_down', fixed_str)
         return fixed_str
 
 
@@ -1057,7 +1063,7 @@ class T_tilde_total():
         }
 
 
-    def get_k_block_structure_html(self, directions_to_study):
+    def get_k_block_structure_html(self, directions_to_study,tolerance=1e-3):
         """
         Appends the general matrix structure (symbolic h_ij form) to the HTML file.
         Inserts the content before the closing </body> tag.
@@ -1070,7 +1076,11 @@ class T_tilde_total():
         if self.hamiltonian_dimension is None:
             print("Warning: Hamiltonian dimension not set. Skipping structure print.")
             return
-
+        import math
+        precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
+        H = sp.simplify(self.total_hamiltonian)
+        H = self.round_matrix_coefficients(H, precision)
+        H = sp.expand(H)
         # Map string directions to indices for display
         # The Hamiltonian uses k0, k1, k2 internally
         direction_map = {"x": 0, "y": 1, "z": 2}
@@ -1172,7 +1182,7 @@ class T_tilde_total():
         return basis_list
 
 
-    def get_detailed_hamiltonian_table_html(self):
+    def get_detailed_hamiltonian_table_html(self,tolerance=1e-3):
         """
          Generates an HTML table snippet representing the Hamiltonian matrix.
         Row and Column headers are derived from get_hamiltonian_basis_explanation().
@@ -1183,6 +1193,11 @@ class T_tilde_total():
         if self.total_hamiltonian is None:
             print("<p>Hamiltonian not constructed.</p>")
             exit(11)
+        import math
+        precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
+        H = sp.simplify(self.total_hamiltonian)
+        H = self.round_matrix_coefficients(H, precision)
+        H = sp.expand(H)
         basis_list = self.get_hamiltonian_basis_explanation()
         N = self.hamiltonian_dimension
         # Start table construction
@@ -1225,7 +1240,7 @@ class T_tilde_total():
         return "".join(html_parts)
 
 
-    def get_nonzero_elements_html(self, precision=3):
+    def get_nonzero_elements_html(self,  tolerance=1e-3):
         """
          Generates an HTML snippet listing all non-zero elements of the Hamiltonian.
           Each element is formatted as h_{ij} = value using LaTeX.
@@ -1238,6 +1253,8 @@ class T_tilde_total():
         if self.total_hamiltonian is None:
             raise ValueError("Hamiltonian not constructed")
         # Simplify, round, and expand the Hamiltonian
+        import math
+        precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
         H = sp.simplify(self.total_hamiltonian)
         H = self.round_matrix_coefficients(H, precision)
         H = sp.expand(H)
@@ -1275,18 +1292,18 @@ class T_tilde_total():
         return "".join(html_parts)
 
 
-    def write_to_html(self, filename, directions_to_study, precision=3):
+    def write_to_html(self, filename, directions_to_study, tolerance=1e-3):
         """
         Initialize an HTML file with basic structure and title.
         includes MathJax for future LaTeX rendering.
         """
         # Get the matrix structure HTML string
-        matrix_structure_html = self.get_k_block_structure_html(directions_to_study)
+        matrix_structure_html = self.get_k_block_structure_html(directions_to_study, tolerance=tolerance)
         # Get the detailed table structure (Grid form with labels)
         detailed_table_html = self.get_detailed_hamiltonian_table_html()
 
         # Get the non-zero elements HTML snippet
-        nonzero_elements_html = self.get_nonzero_elements_html(precision)
+        nonzero_elements_html = self.get_nonzero_elements_html(tolerance=tolerance)
 
         html_content = rf"""<!DOCTYPE html>
            <html lang="en">
