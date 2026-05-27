@@ -3765,37 +3765,59 @@ def populate_atom_T_tilde_lists(unit_cell_atoms, roots_list, directions_to_study
     for root in actual_roots:
         traverse_and_populate(root)
 
+# def sum_atom_T_tilde_lists(unit_cell_atoms):
+#     """
+#     Iterates through each atom in the unit cell and sums the phase-modulated
+#     matrices stored in T_tilde_list. The result is stored in T_tilde_val.
+#     For each key (center_id, neighbor_id) in atom.T_tilde_list:
+#         T_tilde_val[key] = Sum(T_tilde_list[key])
+#     Args:
+#         unit_cell_atoms:  List of atomIndex objects. Modified in-place.
+#
+#     Returns:
+#
+#     """
+#     for i, atom in enumerate(unit_cell_atoms):
+#         # Iterate over each neighbor interaction (key is (to_id, from_id))
+#         for key, matrix_list in atom.T_tilde_list.items():
+#             if not matrix_list:
+#                 raise ValueError(
+#                     f"Error processing Atom {atom.wyckoff_instance_id}: "
+#                     f"The interaction key {key} exists in T_tilde_list but contains no matrices to sum."
+#                 )
+#             # Get dimensions from the first matrix to create a matching zero matrix
+#             rows, cols = matrix_list[0].shape
+#             #  Initialize total_matrix as a zero matrix of the same size
+#             total_matrix = sp.zeros(rows, cols)
+#             #  Sum all matrices
+#             for matrix in matrix_list:
+#                 total_matrix += matrix
+#             #  Simplify the result
+#             total_matrix_simplified = sp.simplify(total_matrix)
+#             # Store in T_tilde_val
+#             atom.T_tilde_val[key] = total_matrix_simplified
+
+
 def sum_atom_T_tilde_lists(unit_cell_atoms):
     """
     Iterates through each atom in the unit cell and sums the phase-modulated
-    matrices stored in T_tilde_list. The result is stored in T_tilde_val.
-    For each key (center_id, neighbor_id) in atom.T_tilde_list:
-        T_tilde_val[key] = Sum(T_tilde_list[key])
-    Args:
-        unit_cell_atoms:  List of atomIndex objects. Modified in-place.
-
-    Returns:
-
+    matrices stored in T_tilde_list.
     """
     for i, atom in enumerate(unit_cell_atoms):
-        # Iterate over each neighbor interaction (key is (to_id, from_id))
         for key, matrix_list in atom.T_tilde_list.items():
             if not matrix_list:
                 raise ValueError(
                     f"Error processing Atom {atom.wyckoff_instance_id}: "
                     f"The interaction key {key} exists in T_tilde_list but contains no matrices to sum."
                 )
-            # Get dimensions from the first matrix to create a matching zero matrix
-            rows, cols = matrix_list[0].shape
-            #  Initialize total_matrix as a zero matrix of the same size
-            total_matrix = sp.zeros(rows, cols)
-            #  Sum all matrices
-            for matrix in matrix_list:
-                total_matrix += matrix
-            #  Simplify the result
-            total_matrix_simplified = sp.simplify(total_matrix)
-            # Store in T_tilde_val
-            atom.T_tilde_val[key] = total_matrix_simplified
+
+            # Fast summation using Python's built-in sum (much faster than a loop with +=)
+            total_matrix = sum(matrix_list[1:], matrix_list[0])
+
+            # Use expand instead of simplify! It is 10x-100x faster.
+            total_matrix_fast = sp.expand(total_matrix)
+
+            atom.T_tilde_val[key] = total_matrix_fast
 
 
 def check_vertex_T_reconstructed_invariant(vertex, lattice_basis, magnetic_space_group_cart_spatial, spinor_mat_representation,
@@ -4127,8 +4149,7 @@ sum_atom_T_tilde_lists(unit_cell_atoms)
 
 T_tilde_tot_obj=T_tilde_total(unit_cell_atoms)
 H=T_tilde_tot_obj.construct_total_hamiltonian()
-sp.pprint(H[0,8])
-sp.pprint(H[8,0])
+
 
 config_file_path = parsed_config["config_file_path"]
 config_dir = Path(config_file_path).parent
@@ -4136,8 +4157,87 @@ out_matrix_file_name=str(config_dir/H_latex_file_name)
 
 T_tilde_tot_obj.write_hamiltonian_to_latex(out_matrix_file_name)
 out_html_file_name=str(config_dir/H_html_file_name)
-T_tilde_tot_obj.write_to_html(out_html_file_name,directions_to_study,3)
+T_tilde_tot_obj.write_to_html(out_html_file_name,directions_to_study,1e-3)
 
 
+
+
+
+
+# ==============================================================================
+# Save Hamiltonian for later use
+# ==============================================================================
+print("\n" + "=" * 80)
+print("SAVING HAMILTONIAN DATA")
+print("=" * 80)
+k_symbols = []
+for direction in directions_to_study:
+    d_str = str(direction).lower().strip()
+
+    if d_str == 'x':
+        k_symbols.append('k0')
+    elif d_str == 'y':
+        k_symbols.append('k1')
+    elif d_str == 'z':
+        k_symbols.append('k2')
+    else:
+        # Fallback for unknown direction
+        raise ValueError(f"Unknown direction '{direction}' found in directions_to_study. "
+                         f"Allowed values are 'x', 'y', 'z'.")
+
+
+# Sort k_symbols to ensure consistent order (e.g., k0, k2 instead of k2, k0)
+k_symbols.sort()
+print(f"Active directions: {directions_to_study}")
+print(f"Mapped k-symbols: {k_symbols}")
+# Prepare comprehensive data package for saving
+# Prepare comprehensive data package for saving
+hamiltonian_data = {
+    # Core Hamiltonian data
+    'hamiltonian': H,  # The symbolic Hamiltonian matrix
+    'hamiltonian_dimension': T_tilde_tot_obj.hamiltonian_dimension,
+
+    # ADD THIS LINE: Get the row/column names (basis vectors)
+    'basis_explanation': T_tilde_tot_obj.get_hamiltonian_basis_explanation(),
+
+    # Atom and orbital information
+    'unit_cell_atoms': unit_cell_atoms,  # Full atom objects with orbital info
+    'sorted_wyckoff_instance_ids': T_tilde_tot_obj.sorted_wyckoff_instance_ids,
+    'block_dimensions': T_tilde_tot_obj.block_dimensions,  # Block sizes
+
+    # Block matrix data
+    'T_tilde_blocks': T_tilde_tot_obj.T_tilde_from_unit_cell_atoms,  # Individual blocks
+
+    # Lattice and symmetry information
+    'lattice_basis': lattice_basis,
+    'space_group_origin_cartesian': origin_cart,
+
+    # Configuration
+    'config': parsed_config,
+
+    # k-vector symbols (dimension-dependent)
+    'k_symbols': k_symbols,  # 1D: ['k0'], 2D: ['k0', 'k1'], 3D: ['k0', 'k1', 'k2']
+
+    # Metadata
+    'creation_date': datetime.now().isoformat(),
+    'version': '0.0'
+}
+# Save as pickle
+out_pickle_file = str(config_dir/H_pkl_file_name)
+with open(out_pickle_file, 'wb') as f:
+    pickle.dump(hamiltonian_data, f)
+
+print(f"T_tilde_tot_obj.block_dimensions={T_tilde_tot_obj.block_dimensions}")
+
+# ==============================================================================
+# Create parameter input file
+# ==============================================================================
+print("\n" + "=" * 80)
+print("CREATING PARAMETER INPUT FILE")
+print("=" * 80)
 param_input_file = str(config_dir/hopping_parameters_template_file_name)
 param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
+print(f"\nNext steps:")
+print(f"1. Edit the file: {param_input_file}")
+print(f"2. Fill in values for all independent parameters")
+print("=" * 80)

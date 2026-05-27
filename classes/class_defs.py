@@ -703,7 +703,8 @@ class T_tilde_total():
         block_matrix = sp.BlockMatrix(blocks)
         # Step 6: Convert BlockMatrix to regular Matrix for easier manipulation
         self.total_hamiltonian = sp.Matrix(block_matrix)
-        self.total_hamiltonian = sp.expand(sp.simplify(self.total_hamiltonian))
+        # CRITICAL SPEEDUP: Remove sp.simplify here. Just expand.
+        self.total_hamiltonian = sp.expand(self.total_hamiltonian)
         return self.total_hamiltonian
 
 
@@ -769,9 +770,9 @@ class T_tilde_total():
 
 
     def write_hamiltonian_to_latex(self, filename, precision=3):
-        H = sp.simplify(self.total_hamiltonian)
+        # H = sp.simplify(self.total_hamiltonian)
         # Convert to LaTeX using SymPy's latex() function
-
+        H = self.total_hamiltonian
         H = self.round_matrix_coefficients(H, precision)
         H = sp.expand(H)
         latex_str = sp.latex(H, mat_delim='[')
@@ -909,10 +910,13 @@ class T_tilde_total():
                 numerical_factors.append(arg)
             else:
                 # Recursively process non-numerical arguments
-                # (they might contain nested multiplications with numbers)
                 processed_arg = self.round_expression_coefficients(arg, precision)
-                if processed_arg != sp.S.Zero:
-                    symbolic_factors.append(processed_arg)
+
+                # CRITICAL FIX: If any factor rounds to zero, the whole product is zero!
+                if processed_arg == sp.S.Zero:
+                    return sp.S.Zero
+
+                symbolic_factors.append(processed_arg)
 
         # Multiply all numerical factors together
         if len(numerical_factors) == 0:
@@ -1062,33 +1066,27 @@ class T_tilde_total():
             'im_params': im_params_sorted
         }
 
-
-    def get_k_block_structure_html(self, directions_to_study,tolerance=1e-3):
+    def get_k_block_structure_html(self, directions_to_study, tolerance=1e-3):
         """
-        Appends the general matrix structure (symbolic h_ij form) to the HTML file.
+        Appends the general matrix structure (symbolic h_{i,j} form) to the HTML file.
         Inserts the content before the closing </body> tag.
-        Args:
-            directions_to_study: list of directions (e.g. ["x", "y"])
-
-        Returns:
-
         """
         if self.hamiltonian_dimension is None:
             print("Warning: Hamiltonian dimension not set. Skipping structure print.")
             return
         import math
         precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
-        H = sp.simplify(self.total_hamiltonian)
+        # H = sp.simplify(self.total_hamiltonian)
+        H = self.total_hamiltonian
         H = self.round_matrix_coefficients(H, precision)
         H = sp.expand(H)
+
         # Map string directions to indices for display
-        # The Hamiltonian uses k0, k1, k2 internally
         direction_map = {"x": 0, "y": 1, "z": 2}
 
         # 1. Construct the Left Hand Side: h(k0, k1, ...)
         k_args = []
         for direction in directions_to_study:
-            # Handle both string "x" and potential integers (just in case)
             d_str = str(direction).lower()
             if d_str in direction_map:
                 idx = direction_map[d_str]
@@ -1098,29 +1096,30 @@ class T_tilde_total():
 
         lhs = f"h({','.join(k_args)})"
 
-        # 2. Construct the Matrix Rows: h_{ij}
+        # 2. Construct the Matrix Rows: h_{i,j}
         N = self.hamiltonian_dimension
         rows = []
         for i in range(N):
             cols = []
             for j in range(N):
-                # Check if the element is exactly zero in the calculated Hamiltonian
+                # Check if the element is exactly zero in the CALCULATED (simplified/rounded) Hamiltonian
                 is_zero = False
-                element = self.total_hamiltonian[i, j]
+                element = H[i, j]
                 if element == 0 or element == sp.S.Zero:
                     is_zero = True
                 if is_zero == True:
                     cols.append("0")
                 else:
-                    # Format indices, e.g., h_{00}, h_{01}
-                    cols.append(f"h_{{{i}{j}}}")
+                    # Format indices, e.g., h_{0,0}, h_{0,1}
+                    cols.append(f"h_{{{i},{j}}}")
 
             # Join columns with '&'
             rows.append(" & ".join(cols))
+
         # Join rows with LaTeX newlines
         matrix_body = " \\\\\n        ".join(rows)
+
         # 3. Assemble the full LaTeX string
-        # We wrap it in $$ ... $$ for MathJax block rendering
         latex_block = (
             f"$$\n"
             f"\\begin{{align}}\n"
@@ -1130,6 +1129,7 @@ class T_tilde_total():
             f"\\end{{align}}\n"
             f"$$"
         )
+
         # 4. Create the HTML snippet
         html_snippet = f"""
                 <div class="section">
@@ -1139,6 +1139,7 @@ class T_tilde_total():
                 </div>
                 """
         return html_snippet
+
 
     def get_orbitals_by_wyckoff_id(self, wyckoff_id):
         """
@@ -1181,41 +1182,40 @@ class T_tilde_total():
                 basis_list.append(f"{wyckoff_id}: {orbital}_down")
         return basis_list
 
-
-    def get_detailed_hamiltonian_table_html(self,tolerance=1e-3):
+    def get_detailed_hamiltonian_table_html(self, tolerance=1e-3):
         """
-         Generates an HTML table snippet representing the Hamiltonian matrix.
+        Generates an HTML table snippet representing the Hamiltonian matrix.
         Row and Column headers are derived from get_hamiltonian_basis_explanation().
-        Cells contain '0' or 'h_{ij}' based on the Hamiltonian structure.
-        Returns:
-
+        Cells contain '0' or 'h_{i,j}' based on the Hamiltonian structure.
         """
         if self.total_hamiltonian is None:
             print("<p>Hamiltonian not constructed.</p>")
             exit(11)
         import math
         precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
-        H = sp.simplify(self.total_hamiltonian)
+        # H = sp.simplify(self.total_hamiltonian)
+        H = self.total_hamiltonian
         H = self.round_matrix_coefficients(H, precision)
         H = sp.expand(H)
+
         basis_list = self.get_hamiltonian_basis_explanation()
         N = self.hamiltonian_dimension
+
         # Start table construction
-        # We use a wrapper div for horizontal scrolling if the matrix is large
         html_parts = [
             '<div style="overflow-x: auto; margin-top: 20px;">',
             '<table style="border-collapse: collapse; width: 100%; font-size: 0.9em;">',
             '<thead>',
             '<tr>',
-            # Top-left corner cell (empty or label)
             '<th style="padding: 8px; border: 1px solid #ddd; background-color: #f2f2f2;">Basis / Basis</th>'
         ]
+
         # Create Column Headers
         for label in basis_list:
-            # Rotate long labels to save space, or keep them standard
             html_parts.append(
                 f'<th style="padding: 8px; border: 1px solid #ddd; background-color: #f8f9fa; min-width: 80px;">{label}</th>')
         html_parts.append('</tr></thead><tbody>')
+
         # Create Rows
         for i in range(N):
             html_parts.append('<tr>')
@@ -1224,42 +1224,37 @@ class T_tilde_total():
                 f'<th style="padding: 8px; border: 1px solid #ddd; background-color: #f8f9fa; text-align: left;">{basis_list[i]}</th>')
             for j in range(N):
                 is_zero = False
-                element = self.total_hamiltonian[i, j]
+                element = H[i, j]
                 if element == 0 or element == sp.S.Zero:
                     is_zero = True
                 if is_zero:
                     cell_content = '<span style="color: #ccc;">0</span>'
                 else:
-                    # Wrap in \( \) for inline MathJax rendering
-                    cell_content = f'\\( h_{{{i}{j}}} \\)'
+                    cell_content = f'\\( h_{{{i},{j}}} \\)'
                 # Add cell to row
                 html_parts.append(
                     f'<td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{cell_content}</td>')
             html_parts.append('</tr>')
+
         html_parts.append('</tbody></table></div>')
         return "".join(html_parts)
 
-
-    def get_nonzero_elements_html(self,  tolerance=1e-3):
+    def get_nonzero_elements_html(self, tolerance=1e-3):
         """
          Generates an HTML snippet listing all non-zero elements of the Hamiltonian.
-          Each element is formatted as h_{ij} = value using LaTeX.
-        Args:
-            precision:
-
-        Returns:
-
+          Each element is formatted as h_{i,j} = value using LaTeX.
         """
         if self.total_hamiltonian is None:
             raise ValueError("Hamiltonian not constructed")
         # Simplify, round, and expand the Hamiltonian
         import math
         precision = int(abs(math.log10(tolerance))) if tolerance > 0 else 3
-        H = sp.simplify(self.total_hamiltonian)
+        # H = sp.simplify(self.total_hamiltonian)
+        H = self.total_hamiltonian
         H = self.round_matrix_coefficients(H, precision)
         H = sp.expand(H)
         rows, cols = H.shape
-        print(f"rows={rows}, cols={cols}")
+        # print(f"rows={rows}, cols={cols}")
         html_parts = [
             '<div class="section">',
             '<h2>Non-zero Hamiltonian Elements</h2>',
@@ -1283,7 +1278,7 @@ class T_tilde_total():
                     block = (
                         f'<div style="border: 1px solid #eee; padding: 20px; '
                         f'border-radius: 5px; background: #fafafa; overflow-x: auto;">'
-                        f'$$ h_{{{i}{j}}} = {latex_val} $$'
+                        f'$$ h_{{{i},{j}}} = {latex_val} $$'
                         f'</div>'
                     )
                     html_parts.append(block)
@@ -1300,7 +1295,7 @@ class T_tilde_total():
         # Get the matrix structure HTML string
         matrix_structure_html = self.get_k_block_structure_html(directions_to_study, tolerance=tolerance)
         # Get the detailed table structure (Grid form with labels)
-        detailed_table_html = self.get_detailed_hamiltonian_table_html()
+        detailed_table_html = self.get_detailed_hamiltonian_table_html(tolerance=tolerance)
 
         # Get the non-zero elements HTML snippet
         nonzero_elements_html = self.get_nonzero_elements_html(tolerance=tolerance)
@@ -1349,7 +1344,7 @@ class T_tilde_total():
                    <!-- Detailed Table -->
                    <div class="section">
                        <h2>Detailed Hamiltonian Structure</h2>
-                       <p>The table below maps the matrix indices to specific Atoms and Orbitals. Non-zero elements are denoted by \( h_{{ij}} \).</p>
+                       <p>The table below maps the matrix indices to specific Atoms and Orbitals. Non-zero elements are denoted by \( h_{{i,j}} \).</p>
                        {detailed_table_html}
                    </div>
                    <!-- Insert Non-zero Elements -->
