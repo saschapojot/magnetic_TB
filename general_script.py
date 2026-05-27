@@ -3495,9 +3495,10 @@ def propagate_to_all_children(parent_vertex, spinor_mat_representation, delta_ve
 # ==============================================================================
 # Print each node with T_reconstructed
 # ==============================================================================
-def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, current_depth=0):
+def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, current_depth=0, tolerance=1e-3):
     """
-    Recursively print tree structure with T_reconstructed for each node
+    Recursively print tree structure with T_reconstructed for each node,
+    cleaning up small floating-point noise before printing.
 
     Args:
         vertex: vertex object to print
@@ -3505,6 +3506,7 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
         is_last: Boolean indicating if this is the last child
         max_depth: Maximum depth to print (None = unlimited)
         current_depth: Current depth in recursion
+        tolerance: Threshold below which floating point numbers are set to 0
     """
     # Check max depth
     if max_depth is not None and current_depth > max_depth:
@@ -3535,12 +3537,25 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
 
     # Print T_reconstructed if it exists
     if hasattr(hop, 'T_reconstructed') and hop.T_reconstructed is not None:
-        free_symbols = hop.T_reconstructed.free_symbols
+
+        # --- NEW CLEANUP LOGIC ---
+        def clean_expr(expr):
+            """Replace floating point numbers smaller than tolerance with exact 0"""
+            if isinstance(expr, sp.Expr):
+                # Find all floats in the expression and replace small ones with 0
+                return expr.xreplace({n: 0 for n in expr.atoms(sp.Float) if abs(n) < tolerance})
+            return expr
+
+        # Apply cleanup to every element in the matrix
+        cleaned_matrix = hop.T_reconstructed.applyfunc(clean_expr)
+        # -------------------------
+
+        free_symbols = cleaned_matrix.free_symbols
         print(f"{detail_prefix}Free parameters: {len(free_symbols)}")
 
-        # Print the matrix
+        # Print the cleaned matrix
         print(f"{detail_prefix}T_reconstructed:")
-        matrix_str = sp.pretty(hop.T_reconstructed, use_unicode=False)
+        matrix_str = sp.pretty(cleaned_matrix, use_unicode=False)
         for line in matrix_str.split('\n'):
             print(f"{detail_prefix}  {line}")
     else:
@@ -3560,8 +3575,7 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
             else:
                 new_prefix = prefix + ("    " if is_last else "│   ")
 
-            print_node_with_matrix(child, new_prefix, is_last_child, max_depth, current_depth + 1)
-
+            print_node_with_matrix(child, new_prefix, is_last_child, max_depth, current_depth + 1, tolerance)
 
 def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,tolerance=1e-3):
     """
@@ -4129,17 +4143,17 @@ print("=" * 80)
 
 
 
-# for tree_idx, root in enumerate(roots_solved):
-#     hop = root.hopping
-#
-#     print(f"\n{'─' * 80}")
-#     print(f"Tree {tree_idx}: Distance = {hop.distance:.6f}, "
-#           f"Hopping: {hop.to_atom.position_name} ← {hop.from_atom.position_name}")
-#     print(f"{'─' * 80}")
-#
-#     print_node_with_matrix(root, max_depth=None)
-#
-# print("\n" + "=" * 80)
+for tree_idx, root in enumerate(roots_solved):
+    hop = root.hopping
+
+    print(f"\n{'─' * 80}")
+    print(f"Tree {tree_idx}: Distance = {hop.distance:.6f}, "
+          f"Hopping: {hop.to_atom.position_name} ← {hop.from_atom.position_name}")
+    print(f"{'─' * 80}")
+
+    print_node_with_matrix(root, max_depth=None)
+
+print("\n" + "=" * 80)
 
 initialize_atom_T_tilde_lists(unit_cell_atoms,roots_solved)
 populate_atom_T_tilde_lists(unit_cell_atoms,roots_solved,directions_to_study,search_dim)
