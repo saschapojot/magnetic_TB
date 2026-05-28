@@ -11,8 +11,7 @@ import base64
 import scipy.linalg
 
 from name_conventions import orbital_map, processed_input_pkl_file_name, type_linear, type_hermitian, H_latex_file_name, \
-    H_html_file_name, H_pkl_file_name, hopping_parameters_template_file_name,representations_all_file_name
-
+    H_html_file_name, H_pkl_file_name, hopping_parameters_template_file_name,representations_all_file_name,relations_file_name
 sp.init_printing(use_unicode=False, wrap_line=False)
 
 from classes.class_defs import frac_to_cartesian, atomIndex,hopping, vertex,T_tilde_total
@@ -3600,6 +3599,7 @@ def analyze_root_constraints_and_propagate(root,tree_idx,lattice_basis,magnetic_
                                         delta_vec,
                                         tolerance)
     root.hopping.T_reconstructed=dict_rst["T_reconstructed"]
+    root.hopping.dependent_expressions = dict_rst["dependent_expressions"]
     propagate_to_all_children(root,spinor_mat_representation,delta_vec,type_linear,type_hermitian,tolerance)
     # CRITICAL: Return the modified root so the main process can receive the updates
     return root
@@ -4090,6 +4090,39 @@ def check_hamiltonian_hermitian(H, tolerance=1e-3):
         'violations': violations
     }
 
+
+def write_dependent_relations_to_file(roots_solved, filename):
+    """
+    Writes the algebraic relationship between dependent and independent
+    hopping variables to a text file.
+    """
+    with open(filename, 'w') as f:
+        f.write("# ==============================================================================\n")
+        f.write("# DEPENDENT HOPPING PARAMETER RELATIONS\n")
+        f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("# ==============================================================================\n\n")
+
+        for tree_idx, root in enumerate(roots_solved):
+            dep_exprs = getattr(root.hopping, 'dependent_expressions', {})
+
+            if not dep_exprs:
+                continue
+
+            hop = root.hopping
+            f.write(f"Tree {tree_idx}: Distance = {hop.distance:.6f}\n")
+            f.write(f"Hopping: {hop.to_atom.position_name} <- {hop.from_atom.position_name}\n")
+            f.write("-" * 80 + "\n")
+
+            # Sort the dependent variables for cleaner output
+            sorted_deps = sorted(dep_exprs.keys(), key=lambda x: str(x))
+
+            for dep_var in sorted_deps:
+                expr = dep_exprs[dep_var]
+                f.write(f"{dep_var} = {expr}\n")
+            f.write("\n")
+
+
+
 tol=1e-3
 roots_from_eq_class=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,magnetic_space_group_cart_spatial,spinor_mat_representation,delta_vec,identity_idx,type_linear,tol)
 # print_all_trees(roots_from_eq_class)
@@ -4251,6 +4284,11 @@ print("CREATING PARAMETER INPUT FILE")
 print("=" * 80)
 param_input_file = str(config_dir/hopping_parameters_template_file_name)
 param_info = T_tilde_tot_obj.create_parameter_input_file(param_input_file)
+
+relations_file = str(config_dir /relations_file_name)
+write_dependent_relations_to_file(roots_solved, relations_file)
+print(f"✓ Created dependent relations file: {relations_file}")
+
 print(f"\nNext steps:")
 print(f"1. Edit the file: {param_input_file}")
 print(f"2. Fill in values for all independent parameters")
