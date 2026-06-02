@@ -3547,6 +3547,8 @@ def print_node_with_matrix(vertex, prefix="", is_last=True, max_depth=None, curr
 
         # Apply cleanup to every element in the matrix
         cleaned_matrix = hop.T_reconstructed.applyfunc(clean_expr)
+        cleaned_matrix=sp.simplify(sp.expand(cleaned_matrix))
+        cleaned_matrix = cleaned_matrix.applyfunc(clean_expr)
         # -------------------------
 
         free_symbols = cleaned_matrix.free_symbols
