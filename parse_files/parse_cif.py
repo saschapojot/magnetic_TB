@@ -156,7 +156,7 @@ def parse_cif_contents_xyz_transformations(file):
     Parses the CIF file to extract symmetry operations, including magnetic time-reversal.
     Returns a list of dictionaries, each containing:
       - 'matrix': A list of 3 dictionaries (for x', y', z' components).
-      - 'delta': The time-reversal symmetry component (+1.0 or -1.0). Defaults to 1.0.
+      - 'delta': The time-reversal symmetry component (+1.0 or -1.0).
     """
     # Get cleaned lines from file
     lines = remove_comments_and_empty_lines_cif(file)
@@ -211,6 +211,7 @@ def parse_cif_contents_xyz_transformations(file):
             raw_components = clean_line.split(",")
 
             if len(raw_components) >= 3:
+                print(f"raw_components={raw_components}")
                 op_matrix = []
                 # Parse the first 3 components (spatial: x, y, z)
                 for comp in raw_components[:3]:
@@ -223,13 +224,14 @@ def parse_cif_contents_xyz_transformations(file):
                         "trans": tr
                     })
 
-                # Parse the 4th component (time-reversal: delta) if it exists
-                delta = 1.0
-                if len(raw_components) == 4:
-                    try:
-                        delta = float(raw_components[3].strip())
-                    except ValueError:
-                        pass  # Default to 1.0 if parsing fails
+                # Parse the 4th component (time-reversal: delta)
+                if len(raw_components) < 4:
+                    raise ValueError(f"Time-reversal component (delta) is missing in symmetry operation: {clean_line}")
+
+                try:
+                    delta = float(raw_components[3].strip())
+                except ValueError:
+                    raise ValueError(f"Invalid delta value in symmetry operation: {clean_line}")
 
                 # Store both the spatial matrix and the time-reversal delta
                 symmetry_operations.append({
@@ -546,7 +548,7 @@ def parse_transformation_one_row_to_matrix(symmetry_op_dict):
 
     # Extract the list of spatial expressions and the delta value
     matrix_list = symmetry_op_dict["matrix"]
-    delta = symmetry_op_dict.get("delta", 1.0)  # Default to 1.0 if delta is missing
+    delta = symmetry_op_dict["delta"]  # Access directly, will fail if missing (handled in parser now)
 
     for row, dict_item in enumerate(matrix_list):
         ret_vec = parse_transformation_one_expression_to_vector(dict_item)
