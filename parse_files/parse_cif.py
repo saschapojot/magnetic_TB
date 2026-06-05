@@ -211,7 +211,7 @@ def parse_cif_contents_xyz_transformations(file):
             raw_components = clean_line.split(",")
 
             if len(raw_components) >= 3:
-                print(f"raw_components={raw_components}")
+                # print(f"raw_components={raw_components}")
                 op_matrix = []
                 # Parse the first 3 components (spatial: x, y, z)
                 for comp in raw_components[:3]:
