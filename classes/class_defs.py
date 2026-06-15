@@ -991,7 +991,7 @@ class T_tilde_total():
             if symbol_str.startswith('re_T') or symbol_str.startswith('im_T'):
                 hopping_params.append(symbol_str)
 
-        # Custom sorting function to group re_ and im_ parts together
+        # Custom sorting function to group re_ and im_ parts together and sort by tree index
         def sort_key(param_name):
             # Extract the base name by removing the prefix
             if param_name.startswith('re_'):
@@ -1004,8 +1004,12 @@ class T_tilde_total():
                 base_name = param_name
                 prefix_order = 2
 
-            # Sort primarily by the base name, secondarily by the prefix order
-            return (base_name, prefix_order)
+            # Extract the tree index (the number inside T^{...}) for numerical sorting
+            match = re.search(r'T\^\{(\d+)\}', base_name)
+            tree_idx = int(match.group(1)) if match else -1
+
+            # Sort primarily by the numerical tree index, secondarily by the base name, then prefix order
+            return (tree_idx, base_name, prefix_order)
 
         # Sort parameters using the custom key
         hopping_params_sorted = sorted(hopping_params, key=sort_key)
