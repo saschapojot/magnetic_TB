@@ -73,7 +73,7 @@ plt.xticks(tick_locations, high_symmetry_labels, fontsize=14)
 
 # Limit x-axis to the range of the path
 plt.xlim(all_distances[0], all_distances[-1])
-plt.ylim(-0.5,0.5)
+plt.ylim(-1,1)
 # plt.yticks(fontsize=20)
 
 # Y-axis label size
