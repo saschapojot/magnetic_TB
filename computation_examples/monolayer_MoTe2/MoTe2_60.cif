@@ -1,0 +1,76 @@
+# CIF file created by FINDTeYM, version 7.1.3
+
+data_MoTe2_60
+_audit_creation_method FINDTeYM
+
+_cell_length_a     3.1930000000
+_cell_length_b     3.1930000000
+_cell_length_c     20.0000000000
+_cell_angle_alpha  90.0000000000
+_cell_angle_beta   90.0000000000
+_cell_angle_gamma  60.0000000000
+#_cell_volume       176.5868926382
+
+_space_group_magn.number_BNTe "187.210"
+_space_group_magn.name_UNI "P-6m2.1'"
+_space_group_magn.name_BNTe "P-6m21'"
+_space_group_magn.number_OG "187.2.1440"
+_space_group_magn.name_OG "P-6m21'"
+_space_group_magn.point_group_number_Litvin "26.2.96"
+_space_group_magn.point_group_name_UNI "-6m2.1'"
+
+loop_
+_space_group_magn_transforms.id
+_space_group_magn_transforms.Pp_abc
+_space_group_magn_transforms.source
+1 a,b,c;0,0,0 "BNTe"
+2 a,b,c;0,0,0 "OG"
+
+loop_
+_space_group_symop_magn_operation.id
+_space_group_symop_magn_operation.xyz
+1 x,y,z,+1
+2 -x-y,x,z,+1
+3 y,-x-y,z,+1
+4 y,x,-z,+1
+5 -x-y,y,-z,+1
+6 x,-x-y,-z,+1
+7 y,-x-y,-z,+1
+8 x,y,-z,+1
+9 -x-y,x,-z,+1
+10 -x-y,y,z,+1
+11 x,-x-y,z,+1
+12 y,x,z,+1
+13 x,y,z,-1
+14 -x-y,x,z,-1
+15 y,-x-y,z,-1
+16 y,x,-z,-1
+17 -x-y,y,-z,-1
+18 x,-x-y,-z,-1
+19 y,-x-y,-z,-1
+20 x,y,-z,-1
+21 -x-y,x,-z,-1
+22 -x-y,y,z,-1
+23 x,-x-y,z,-1
+24 y,x,z,-1
+
+
+loop_
+_atom_type_symbol
+Mo    
+Te     
+
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_symmetry_multiplicity
+_atom_site_Wyckoff_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_fract_symmform
+Mo1 Mo   1 a  0.0000000000  0.0000000000  0.0000000000  1.0000000000 0,0,0  
+Te1  Te    2 i  0.3333333333  0.3333333333  0.0782000000  1.0000000000 0,0,Dz 
+
+# end of cif
